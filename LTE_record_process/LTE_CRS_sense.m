@@ -4,17 +4,15 @@ clear;
 clc;
 close all;
 
-%%
+%% Basic Parameters
 
-file_path = "experiment_data/LTE_20260708/LTE_fc_3200M_fs_30720k_20260708_0003.bin";
-fc = 3200e6;
-sr = 30720e3;
+[file_path, fc, sr] = autoLoadLTEFile('20260711', 4);
 
 c = physconst('LightSpeed');
 
 %% Synchronous Using Headframe
 
-signal = read_gnuradio_format_file(file_path, 'int16', 0, 307200*4);
+signal = read_gnuradio_format_file(file_path, 'int16', 0, 307200*5);
 headFrame = double(signal)/32768;
 
 %%
@@ -393,10 +391,6 @@ CSI_frame_G2 = zeros(N_crs_freq, N_symbol, nRx, nTx);
 grid_frame = zeros(N_carrier, N_symbol*7, nRx);
 raw_csi_frame = zeros(N_crs_freq, N_symbol, nRx, nTx);
 
-cfoFreq_acc = 0;
-first_cfoFreq_acc = [];
-first_symbolShift = [];
-
 for sfIdx = 1:numSubframes
     
     % --- Step A: 动态内存映射读取与 SFO 整数漂移补偿 ---
@@ -431,8 +425,6 @@ for sfIdx = 1:numSubframes
     tailSegment = coarseWave(nfft+1:nfft+cpLen, 1);
     newOffset = angle(sum(tailSegment .* conj(frontSegment))) * ang2Freq;
     cfoFreq = cfoFreq + newOffset;
-
-    cfoFreq_acc = cfoFreq_acc + cfoFreq;
     
     % 施加更新后的 CFO
     cfoCorVec = exp(-2i*pi*cfoFreq*tLim);
@@ -521,6 +513,9 @@ for sfIdx = 1:numSubframes
         
         figure(rdFigure);
         imagesc(v_lim, r_lim, rd_mag, display_range);
+        % imagesc(abs(grid_frame));
+        % imagesc(angle(CSI_frame_G1(:, :, 1, 1)));
+        % imagesc(10*log10(abs(fftshift(fft(CSI_frame_G1(:, :, 1, 1), 2048, 1), 1))));
         set(gca, 'YDir', 'normal');
         colormap('jet'); 
         colorbar;
