@@ -1,5 +1,5 @@
 function [CSI_G1, CSI_G2, K_idx_G1, K_idx_G2] = fastDLCSIEstimate(enb, rxgrid_sf)
-% FASTDLCSIESTIMATE 直接提取同子载波的 LTE CRS，拼接成 CSI 矩阵
+%FASTDLCSIESTIMATE 直接提取同子载波的 LTE CRS，拼接成 CSI 矩阵
 % 
 % 返回值:
 % CSI_G1: 第一、三列 CRS 组成的信道矩阵，大小 [N_crs_freq, 2, nRx, nTx]
