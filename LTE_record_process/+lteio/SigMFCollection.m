@@ -46,17 +46,17 @@ classdef SigMFCollection < handle
             obj.collection_name = collectionName;
             obj.file_path = fullfile(rootDir, ...
                 [collectionName '.sigmf-collection']);
-            obj.streams = SigMFDataFile.empty(0, 0);
+            obj.streams = lteio.SigMFDataFile.empty(0, 0);
 
             if ~isfile(obj.file_path)
                 error('SigMFCollection:FileNotFound', ...
                     'collection 文件不存在: %s', obj.file_path);
             end
 
-            obj.metadata = SigMFCollection.readJson(obj.file_path);
-            obj.collection = SigMFCollection.getJsonField( ...
+            obj.metadata = lteio.SigMFCollection.readJson(obj.file_path);
+            obj.collection = lteio.SigMFCollection.getJsonField( ...
                 obj.metadata, 'collection', struct());
-            definitions = SigMFCollection.getJsonField( ...
+            definitions = lteio.SigMFCollection.getJsonField( ...
                 obj.collection, 'core:streams', struct([]));
             obj.stream_definitions = definitions;
 
@@ -68,10 +68,10 @@ classdef SigMFCollection < handle
 
             obj.stream_count = numel(definitions);
             obj.stream_names = cell(obj.stream_count, 1);
-            obj.streams = SigMFDataFile.empty(0, obj.stream_count);
+            obj.streams = lteio.SigMFDataFile.empty(0, obj.stream_count);
             for k = 1:obj.stream_count
-                streamName = SigMFCollection.toChar( ...
-                    SigMFCollection.getJsonField(definitions(k), ...
+                streamName = lteio.SigMFCollection.toChar( ...
+                    lteio.SigMFCollection.getJsonField(definitions(k), ...
                     'name', ''));
                 if isempty(streamName)
                     error('SigMFCollection:InvalidStream', ...
@@ -88,7 +88,7 @@ classdef SigMFCollection < handle
                 end
 
                 obj.stream_names{k} = streamName;
-                obj.streams(k) = SigMFDataFile(rootDir, streamName);
+                obj.streams(k) = lteio.SigMFDataFile(rootDir, streamName);
             end
         end
 

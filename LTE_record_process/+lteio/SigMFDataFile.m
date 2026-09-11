@@ -1,4 +1,4 @@
-classdef SigMFDataFile < IQDataFile
+classdef SigMFDataFile < lteio.IQDataFile
 %SIGMFDATAFILE Reader for one SigMF data/meta pair.
 %
 %   obj = SigMFDataFile(rootDir, recordName)
@@ -25,7 +25,7 @@ classdef SigMFDataFile < IQDataFile
 
     methods
         function obj = SigMFDataFile(rootDir, recordName)
-            obj@IQDataFile();
+            obj@lteio.IQDataFile();
 
             if nargin < 2 || isempty(rootDir) || isempty(recordName)
                 error('SigMFDataFile:MissingPath', ...
@@ -53,7 +53,7 @@ classdef SigMFDataFile < IQDataFile
         end
 
         function info = describe(obj)
-            info = describe@IQDataFile(obj);
+            info = describe@lteio.IQDataFile(obj);
             info.root_dir = obj.root_dir;
             info.record_name = obj.record_name;
             info.meta_file = obj.meta_file;
@@ -120,7 +120,7 @@ classdef SigMFDataFile < IQDataFile
                     error('SigMFDataFile:FileOpen', ...
                         '无法打开文件: %s', obj.file_path);
                 end
-                cleanup = onCleanup(@() fclose(fid)); %#ok<NASGU>
+                cleanup = onCleanup(@() fclose(fid));
                 if fseek(fid, byteOffset, 'bof') ~= 0
                     error('SigMFDataFile:FseekError', ...
                         '无法定位到字节偏移 %.0f: %s', ...
@@ -134,6 +134,7 @@ classdef SigMFDataFile < IQDataFile
                          '实际读取 %.0f 个。'], ...
                         scalarCount, numel(raw));
                 end
+                clear cleanup;
             end
 
             raw = double(raw);
@@ -163,30 +164,31 @@ classdef SigMFDataFile < IQDataFile
                     '元数据文件不存在: %s', obj.meta_file);
             end
 
-            raw = SigMFDataFile.readJson(obj.meta_file);
-            globalMetadata = SigMFDataFile.getJsonField( ...
+            raw = lteio.SigMFDataFile.readJson(obj.meta_file);
+            globalMetadata = lteio.SigMFDataFile.getJsonField( ...
                 raw, 'global', struct());
-            captureList = SigMFDataFile.getJsonField( ...
+            captureList = lteio.SigMFDataFile.getJsonField( ...
                 raw, 'captures', struct([]));
-            annotationList = SigMFDataFile.getJsonField( ...
+            annotationList = lteio.SigMFDataFile.getJsonField( ...
                 raw, 'annotations', struct([]));
 
-            datatype = SigMFDataFile.toChar(SigMFDataFile.getJsonField( ...
+            datatype = lteio.SigMFDataFile.toChar( ...
+                lteio.SigMFDataFile.getJsonField( ...
                 globalMetadata, 'core:datatype', ''));
             if isempty(datatype)
                 error('SigMFDataFile:MissingDatatype', ...
                     'SigMF 元数据缺少 core:datatype: %s', obj.meta_file);
             end
-            datatypeInfo = IQDataFile.makeDatatypeInfo(datatype);
+            datatypeInfo = lteio.IQDataFile.makeDatatypeInfo(datatype);
 
-            numChannels = SigMFDataFile.getJsonField( ...
+            numChannels = lteio.SigMFDataFile.getJsonField( ...
                 globalMetadata, 'core:num_channels', 1);
             if isempty(numChannels)
                 numChannels = 1;
             end
             numChannels = double(numChannels);
 
-            trailingBytes = SigMFDataFile.getJsonField( ...
+            trailingBytes = lteio.SigMFDataFile.getJsonField( ...
                 globalMetadata, 'core:trailing_bytes', 0);
             if isempty(trailingBytes)
                 trailingBytes = 0;
@@ -197,13 +199,14 @@ classdef SigMFDataFile < IQDataFile
             if ~isempty(captureList)
                 capture = captureList(1);
             end
-            frequency = SigMFDataFile.getJsonField( ...
+            frequency = lteio.SigMFDataFile.getJsonField( ...
                 capture, 'core:frequency', NaN);
-            startTimeUtc = SigMFDataFile.toChar(SigMFDataFile.getJsonField( ...
+            startTimeUtc = lteio.SigMFDataFile.toChar( ...
+                lteio.SigMFDataFile.getJsonField( ...
                 capture, 'core:datetime', ''));
-            sampleStart = SigMFDataFile.getJsonField( ...
+            sampleStart = lteio.SigMFDataFile.getJsonField( ...
                 capture, 'core:sample_start', 0);
-            sampleRate = SigMFDataFile.getJsonField( ...
+            sampleRate = lteio.SigMFDataFile.getJsonField( ...
                 globalMetadata, 'core:sample_rate', NaN);
 
             dataExists = isfile(obj.file_path);
@@ -245,7 +248,8 @@ classdef SigMFDataFile < IQDataFile
             obj.start_time_utc = startTimeUtc;
             obj.sample_start = double(sampleStart);
             obj.trailing_bytes = trailingBytes;
-            obj.sha512 = SigMFDataFile.toChar(SigMFDataFile.getJsonField( ...
+            obj.sha512 = lteio.SigMFDataFile.toChar( ...
+                lteio.SigMFDataFile.getJsonField( ...
                 globalMetadata, 'core:sha512', ''));
         end
     end
