@@ -1,11 +1,11 @@
-classdef RangeDopplerViewer < handle
-%RANGEDOPPLERVIEWER Render live range-Doppler products.
+classdef Viewer < ltepipe.Module
+%VIEWER Render range-Doppler packets without changing the message.
 
     properties (SetAccess = private)
         Config
-        FigureManager
         UpdateCount = 0
         AxesHandle = []
+        AxesWasCreated = false
     end
 
     properties (Access = private)
@@ -15,26 +15,45 @@ classdef RangeDopplerViewer < handle
     end
 
     methods
-        function obj = RangeDopplerViewer(config, figureManager)
+        function obj = Viewer(config, axesHandle)
+            obj@ltepipe.Module( ...
+                'rangeDopplerViewer', ...
+                'range-doppler', 'range-doppler');
             obj.Config = config;
-            obj.FigureManager = figureManager;
+            obj.AxesHandle = axesHandle;
+            obj.AxesWasCreated = ...
+                ~isempty(axesHandle) && isgraphics(axesHandle);
         end
 
-        function update(obj, packet)
-            if ~obj.Config.Enabled
-                return;
+        function result = process(obj, message)
+            obj.validateInput(message);
+            if obj.Config.Enabled && message.HasPacket
+                obj.render(message.Packet);
             end
-            view = obj.Config.Views.RangeDoppler;
-            axesHandle = obj.FigureManager.getOrCreateAxes( ...
-                view.WindowKey, view.WindowName, view.AxesKey, ...
-                view.GridSize, view.Tile);
-            if isempty(axesHandle)
+            if obj.viewWasClosed()
+                result = ltepipe.Result.stop(message, 'user-stopped');
+            else
+                result = ltepipe.Result.forward(message);
+            end
+        end
+
+        function status = getStatus(obj)
+            status = struct('State', 'ready', 'Ready', true, ...
+                'UpdateCount', obj.UpdateCount, ...
+                'AxesAvailable', ~isempty(obj.AxesHandle) && ...
+                isgraphics(obj.AxesHandle), ...
+                'AxesWasCreated', obj.AxesWasCreated);
+        end
+    end
+
+    methods (Access = private)
+        function render(obj, packet)
+            if isempty(obj.AxesHandle) || ~isgraphics(obj.AxesHandle)
                 return;
             end
             if isempty(obj.ImageHandle) || ...
-                    ~isgraphics(obj.ImageHandle) || ...
-                    ~isequal(obj.AxesHandle, axesHandle)
-                obj.initializeGraphics(axesHandle, packet);
+                    ~isgraphics(obj.ImageHandle)
+                obj.initializeGraphics(obj.AxesHandle, packet);
             else
                 set(obj.ImageHandle, ...
                     'XData', packet.Data.VelocityMetersPerSecond, ...
@@ -50,14 +69,6 @@ classdef RangeDopplerViewer < handle
             obj.UpdateCount = obj.UpdateCount+1;
         end
 
-        function value = stopRequested(obj)
-            view = obj.Config.Views.RangeDoppler;
-            value = obj.Config.Enabled && ...
-                obj.FigureManager.wasClosed(view.WindowKey);
-        end
-    end
-
-    methods (Access = private)
         function initializeGraphics(obj, axesHandle, packet)
             obj.AxesHandle = axesHandle;
             obj.ImageHandle = imagesc(axesHandle, ...
@@ -70,6 +81,11 @@ classdef RangeDopplerViewer < handle
             obj.TitleHandle = title(axesHandle, '');
             xlabel(axesHandle, 'Velocity (m/s)');
             ylabel(axesHandle, 'Range (m)');
+        end
+
+        function value = viewWasClosed(obj)
+            value = obj.Config.Enabled && obj.AxesWasCreated && ...
+                ~isgraphics(obj.AxesHandle);
         end
     end
 end

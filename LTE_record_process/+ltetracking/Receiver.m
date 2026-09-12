@@ -1,4 +1,4 @@
-classdef Receiver < handle
+classdef Receiver < ltepipe.Module
 %RECEIVER Composite streaming LTE receiver with internal tracking feedback.
 
     properties (SetAccess = private)
@@ -20,35 +20,39 @@ classdef Receiver < handle
 
     methods
         function obj = Receiver(dataFile, config)
+            obj@ltepipe.Module('receiver', '', 'csi-subframe');
             obj.DataFile = dataFile;
             obj.Config = config;
             obj.Acquirer = ltesync.Acquirer(config.Acquisition);
             obj.SyncSupervisor = ltesync.SyncSupervisor(config.Sync);
         end
 
-        function lock = start(obj)
-            obj.Lock = obj.Acquirer.acquire(obj.DataFile, 1);
-            obj.configureFromLock();
-            obj.Started = true;
-            lock = obj.Lock;
-        end
-
-        function value = hasMoreData(obj)
-            if ~obj.Started
-                value = true;
-            else
-                value = obj.Timebase.canRead(obj.DataFile.sample_count);
+        function initialize(obj, runtime)
+            initialize@ltepipe.Module(obj, runtime);
+            lock = obj.start();
+            runtime.setContext('Lte', obj.Context);
+            if obj.Config.Execution.Verbose
+                fprintf(['LTE receiver locked: NCellID=%d, NDLRB=%d, ' ...
+                    'CellRefP=%d, CFO=%.3f Hz, raw start=%d.\n'], ...
+                    obj.Context.Enb.NCellID, obj.Context.Enb.NDLRB, ...
+                    obj.Context.Enb.CellRefP, lock.InitialCfoHz, ...
+                    lock.RawFrameStartSample0);
             end
         end
 
-        function result = step(obj)
+        function result = process(obj, message)
+            obj.validateInput(message);
+            if message.HasPacket
+                error('ltetracking:Receiver:UnexpectedInput', ...
+                    'The receiver source does not accept an input packet.');
+            end
             if ~obj.Started
                 obj.start();
             end
-            result = obj.emptyResult();
             if ~obj.Timebase.canRead(obj.DataFile.sample_count)
                 obj.EndOfFile = true;
-                result.EndOfFile = true;
+                result = ltepipe.Result.stop( ...
+                    ltepipe.Message.none(), 'end-of-file');
                 return;
             end
 
@@ -85,6 +89,7 @@ classdef Receiver < handle
             packet = struct('Data', data, 'Meta', meta, ...
                 'Quality', struct('Cfo', cfoQuality, ...
                 'Tracking', trackingQuality));
+            packet.Type = 'csi-subframe';
             syncEvent = obj.SyncSupervisor.observe( ...
                 cfoQuality.CpCorrelation, meta);
             if syncEvent.Available
@@ -93,10 +98,7 @@ classdef Receiver < handle
             end
 
             obj.Timebase.advance(trackingQuality.TimingDeltaLteSamples);
-            result.Available = true;
-            result.Packet = packet;
-            result.Epoch = meta.Epoch;
-            result.Status = obj.getStatus();
+            result = ltepipe.Result.emit(packet);
         end
 
         function status = getStatus(obj)
@@ -106,6 +108,7 @@ classdef Receiver < handle
             end
             status = struct('State', 'ready', 'Ready', true, ...
                 'Epoch', obj.Lock.Epoch, ...
+                'EndOfFile', obj.EndOfFile, ...
                 'Cfo', obj.CfoTracker.getStatus(), ...
                 'Csi', obj.CsiTracker.getStatus(), ...
                 'Sync', obj.SyncSupervisor.getStatus());
@@ -113,6 +116,14 @@ classdef Receiver < handle
     end
 
     methods (Access = private)
+        function lock = start(obj)
+            obj.Lock = obj.Acquirer.acquire(obj.DataFile, 1);
+            obj.configureFromLock();
+            obj.Started = true;
+            obj.EndOfFile = false;
+            lock = obj.Lock;
+        end
+
         function configureFromLock(obj)
             enb = obj.Lock.Enb;
             enb.CellRefP = min( ...
@@ -134,6 +145,9 @@ classdef Receiver < handle
             obj.CsiTracker = ltetracking.CsiTracker( ...
                 obj.Config.Tracking, obj.Context);
             obj.SyncSupervisor.reset();
+            if ~isempty(obj.Runtime)
+                obj.Runtime.setContext('Lte', obj.Context);
+            end
         end
 
         function waveform = resampleSubframe(obj, rawWaveform)
@@ -168,22 +182,9 @@ classdef Receiver < handle
             obj.Lock = obj.Acquirer.acquire( ...
                 obj.DataFile, previousEpoch+1, searchStart);
             obj.configureFromLock();
-            result = obj.emptyResult();
-            result.Discontinuity = true;
-            result.Epoch = obj.Lock.Epoch;
-            result.Reason = event.Payload.Reason;
-            result.Status = obj.getStatus();
-        end
-
-        function result = emptyResult(obj) %#ok<MANU>
-            result = struct( ...
-                'Available', false, ...
-                'Packet', struct(), ...
-                'Discontinuity', false, ...
-                'Epoch', NaN, ...
-                'Reason', '', ...
-                'EndOfFile', false, ...
-                'Status', struct());
+            result = ltepipe.Result.resetDownstream( ...
+                ltepipe.Message.none(), obj.Lock.Epoch, ...
+                event.Payload.Reason);
         end
     end
 end

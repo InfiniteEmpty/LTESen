@@ -1,4 +1,4 @@
-classdef CsiFrameAssembler < handle
+classdef CsiFrameAssembler < ltepipe.Module
 %CSIFRAMEASSEMBLER Assemble ten consecutive CSI subframes into one frame.
 
     properties (SetAccess = private)
@@ -15,11 +15,23 @@ classdef CsiFrameAssembler < handle
     end
 
     methods
-        function result = push(obj, packet)
+        function obj = CsiFrameAssembler()
+            obj@ltepipe.Module( ...
+                'frameAssembler', 'csi-subframe', 'csi-frame');
+        end
+
+        function result = process(obj, message)
+            obj.validateInput(message);
+            if ~message.HasPacket
+                result = ltepipe.Result.forward(message);
+                return;
+            end
+            packet = message.Packet;
             obj.validatePacket(packet);
             meta = packet.Meta;
             if ~isequal(obj.Epoch, meta.Epoch)
-                obj.reset(meta.Epoch, 'new-epoch');
+                obj.reset(struct('Epoch', meta.Epoch, ...
+                    'Reason', 'new-epoch'));
             end
             if obj.BufferedSubframes > 0 && ...
                     meta.Sequence ~= obj.ExpectedSequence
@@ -31,7 +43,7 @@ classdef CsiFrameAssembler < handle
             end
             if obj.BufferedSubframes == 0
                 if meta.SubframeNumber ~= 0
-                    result = obj.emptyResult();
+                    result = obj.emptyResult(message);
                     return;
                 end
                 obj.allocate(packet.Data);
@@ -46,7 +58,7 @@ classdef CsiFrameAssembler < handle
             obj.BufferedSubframes = obj.BufferedSubframes + 1;
             obj.ExpectedSequence = meta.Sequence + 1;
 
-            result = obj.emptyResult();
+            result = obj.emptyResult(message);
             if meta.SubframeNumber ~= 9
                 return;
             end
@@ -54,18 +66,23 @@ classdef CsiFrameAssembler < handle
             frameMeta.RawEndSample0 = meta.RawEndSample0;
             frameMeta.EndSequence = meta.Sequence;
             frameMeta.SubframeNumber = [];
-            result.Available = true;
-            result.Packet = struct('Data', obj.Buffer, ...
+            outputPacket = struct('Type', 'csi-frame', ...
+                'Data', obj.Buffer, ...
                 'Meta', frameMeta, ...
                 'Quality', struct('Complete', true, ...
-                'SubframeCount', obj.BufferedSubframes));
+                    'SubframeCount', obj.BufferedSubframes));
+            result.Message = obj.replaceOutput( ...
+                result.Message, outputPacket);
             obj.EmittedFrames = obj.EmittedFrames + 1;
             obj.clearPartial();
         end
 
-        function reset(obj, epoch, reason) %#ok<INUSD>
-            if nargin < 2
+        function reset(obj, event)
+            if nargin < 2 || ~isstruct(event) || ...
+                    ~isfield(event, 'Epoch')
                 epoch = NaN;
+            else
+                epoch = event.Epoch;
             end
             if obj.BufferedSubframes > 0
                 obj.DroppedPartialFrames = obj.DroppedPartialFrames + 1;
@@ -130,8 +147,9 @@ classdef CsiFrameAssembler < handle
             end
         end
 
-        function result = emptyResult(obj) %#ok<MANU>
-            result = struct('Available', false, 'Packet', struct());
+        function result = emptyResult(obj, message) %#ok<INUSL>
+            result = ltepipe.Result.forward( ...
+                ltepipe.Message.clearPacket(message));
         end
     end
 end

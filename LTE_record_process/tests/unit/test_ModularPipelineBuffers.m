@@ -6,6 +6,8 @@ function setupOnce(testCase)
 testDirectory = fileparts(mfilename('fullpath'));
 projectDirectory = fileparts(fileparts(testDirectory));
 testCase.applyFixture(matlab.unittest.fixtures.PathFixture(projectDirectory));
+testCase.applyFixture(matlab.unittest.fixtures.PathFixture( ...
+    fullfile(fileparts(testDirectory), 'helpers')));
 end
 
 function testTimebaseUsesExplicitSampleDomains(testCase)
@@ -29,30 +31,35 @@ end
 function testAssemblerEmitsOnlyCompleteFrame(testCase)
 assembler = ltebuffer.CsiFrameAssembler();
 for subframe = 0:8
-    result = assembler.push(makeSubframe(1, subframe, subframe));
-    verifyFalse(testCase, result.Available);
+    result = assembler.process(ltepipe.Message.fromPacket( ...
+        makeSubframe(1, subframe, subframe)));
+    verifyFalse(testCase, result.Message.HasPacket);
 end
-result = assembler.push(makeSubframe(1, 9, 9));
-verifyTrue(testCase, result.Available);
-verifyEqual(testCase, result.Packet.Data.G1, ...
+result = assembler.process(ltepipe.Message.fromPacket( ...
+    makeSubframe(1, 9, 9)));
+verifyTrue(testCase, result.Message.HasPacket);
+verifyEqual(testCase, result.Message.Packet.Data.G1, ...
     reshape(repelem(0:9, 2), 1, 20));
-verifyEqual(testCase, result.Packet.Meta.EndSequence, 9);
+verifyEqual(testCase, result.Message.Packet.Meta.EndSequence, 9);
 end
 
 function testAssemblerDoesNotBridgeSequenceGap(testCase)
 assembler = ltebuffer.CsiFrameAssembler();
 for subframe = 0:3
-    assembler.push(makeSubframe(1, subframe, subframe));
+    assembler.process(ltepipe.Message.fromPacket( ...
+        makeSubframe(1, subframe, subframe)));
 end
-result = assembler.push(makeSubframe(1, 5, 5));
-verifyFalse(testCase, result.Available);
+result = assembler.process(ltepipe.Message.fromPacket( ...
+    makeSubframe(1, 5, 5)));
+verifyFalse(testCase, result.Message.HasPacket);
 verifyEqual(testCase, assembler.BufferedSubframes, 0);
 verifyEqual(testCase, assembler.DroppedPartialFrames, 1);
 for subframe = 0:9
-    result = assembler.push(makeSubframe(1, 10+subframe, subframe));
+    result = assembler.process(ltepipe.Message.fromPacket( ...
+        makeSubframe(1, 10+subframe, subframe)));
 end
-verifyTrue(testCase, result.Available);
-verifyEqual(testCase, result.Packet.Meta.Sequence, 10);
+verifyTrue(testCase, result.Message.HasPacket);
+verifyEqual(testCase, result.Message.Packet.Meta.Sequence, 10);
 end
 
 function testFrameWindowPreservesTimeOrderAndAntennas(testCase)
@@ -76,14 +83,16 @@ config.Cancellation.WarmupFrames = 6;
 canceller = ltecancel.ArKalmanCanceller(config.Cancellation);
 for frameIndex = 0:2
     packet = makeCancellationFrame(1, frameIndex*10, frameIndex);
-    result = canceller.push(packet);
-    verifyTrue(testCase, result.Available);
-    verifyFalse(testCase, result.Packet.Meta.CancellationReady);
-    verifyEqual(testCase, result.Packet.Data.G1, packet.Data.G1);
+    result = canceller.process(ltepipe.Message.fromPacket(packet));
+    verifyTrue(testCase, result.Message.HasPacket);
+    verifyFalse(testCase, ...
+        result.Message.Packet.Meta.CancellationReady);
+    verifyEqual(testCase, ...
+        result.Message.Packet.Data.G1, packet.Data.G1);
 end
 verifyEqual(testCase, canceller.FrameCount, 3);
 packet = makeCancellationFrame(2, 0, 0);
-canceller.push(packet);
+canceller.process(ltepipe.Message.fromPacket(packet));
 verifyEqual(testCase, canceller.Epoch, 2);
 verifyEqual(testCase, canceller.FrameCount, 1);
 end
@@ -94,7 +103,7 @@ canceller = ltecancel.ArKalmanCanceller(config.Cancellation);
 first = canceller.finalize('completed');
 second = canceller.finalize('different-reason');
 verifyEqual(testCase, second, first);
-verifyFalse(testCase, first.Available);
+verifyEmpty(testCase, first.Message.Artifacts);
 verifyTrue(testCase, canceller.Finalized);
 end
 
@@ -122,10 +131,13 @@ config = defaultLteSenseConfig();
 config.Display.FigureVisible = 'off';
 manager = ltevisual.FigureManager(config.Display);
 cleanup = onCleanup(@() manager.closeAll());
-rdViewer = ltevisual.RangeDopplerViewer(config.Display, manager);
-arViewer = ltevisual.ArSpectrumViewer(config.Display, manager);
+viewAxes = manager.createViews(config.Display.Views);
+rdViewer = lterd.Viewer(config.Display, viewAxes.RangeDoppler);
+arViewer = ltecancel.ArSpectrumViewer( ...
+    config.Display, viewAxes.ArSpectrum);
 
 rdPacket = struct( ...
+    'Type', 'range-doppler', ...
     'Data', struct( ...
         'VelocityMetersPerSecond', [-1, 1], ...
         'RangeMeters', [0, 2], ...
@@ -141,8 +153,13 @@ arArtifact = struct( ...
         'RootHz', [-20; 25]), ...
     'Meta', struct());
 
-rdViewer.update(rdPacket);
-arViewer.update(arArtifact);
+rdMessage = ltepipe.Message.fromPacket(rdPacket);
+arMessage = ltepipe.Message.addArtifact( ...
+    ltepipe.Message.none(), arArtifact);
+rdResult = rdViewer.process(rdMessage);
+arResult = arViewer.process(arMessage);
+verifyEqual(testCase, rdResult.Message, rdMessage);
+verifyEqual(testCase, arResult.Message, arMessage);
 rdAxes = rdViewer.AxesHandle;
 arAxes = arViewer.AxesHandle;
 verifyTrue(testCase, isgraphics(rdAxes));
@@ -152,16 +169,76 @@ verifyEqual(testCase, ancestor(rdAxes, 'figure'), ...
     ancestor(arAxes, 'figure'));
 verifyEqual(testCase, manager.getStatus().Keys, {'live-monitor'});
 
-rdViewer.update(rdPacket);
-arViewer.update(arArtifact);
+rdViewer.process(rdMessage);
+arViewer.process(arMessage);
 verifyEqual(testCase, rdViewer.AxesHandle, rdAxes);
 verifyEqual(testCase, arViewer.AxesHandle, arAxes);
 verifyEqual(testCase, rdViewer.UpdateCount, 2);
 verifyEqual(testCase, arViewer.UpdateCount, 2);
 
 close(ancestor(rdAxes, 'figure'));
-verifyTrue(testCase, rdViewer.stopRequested());
+stopResult = rdViewer.process(ltepipe.Message.none());
+verifyEqual(testCase, stopResult.Directive, 'stop');
 clear cleanup;
+end
+
+function testPipelineHandlesResetStopAndStatusGenerically(testCase)
+packet = makeTestPacket(1);
+steps = { ...
+    ltepipe.Result.resetDownstream( ...
+        ltepipe.Message.none(), 2, 'test-gap'), ...
+    ltepipe.Result.emit(packet), ...
+    ltepipe.Result.stop(ltepipe.Message.none(), 'end-of-file')};
+source = testsupport.ScriptedSource(steps, 'test');
+firstProbe = testsupport.Probe('firstProbe', 'test');
+secondProbe = testsupport.Probe('secondProbe', 'test');
+config = defaultLteSenseConfig();
+config.Display.Enabled = false;
+config.Execution.MaximumIterations = 10;
+config.Execution.Verbose = false;
+pipeline = ltepipe.Pipeline(config.Execution);
+pipeline.register(source);
+pipeline.register(firstProbe);
+pipeline.register(secondProbe);
+
+summary = pipeline.run();
+verifyEqual(testCase, summary.Iterations, 3);
+verifyEqual(testCase, summary.TerminationReason, 'end-of-file');
+verifyEqual(testCase, firstProbe.ResetCount, 1);
+verifyEqual(testCase, secondProbe.ResetCount, 1);
+verifyEqual(testCase, firstProbe.PacketCount, 1);
+verifyEqual(testCase, secondProbe.PacketCount, 1);
+verifyEqual(testCase, {summary.Modules.Name}, ...
+    {'source', 'firstProbe', 'secondProbe'});
+verifyEqual(testCase, firstProbe.LastReset.Source, 'source');
+printed = evalc('ltepipe.printStatus(summary)');
+verifyTrue(testCase, contains(printed, 'Modules (3):'));
+verifyTrue(testCase, contains(printed, ...
+    '[1] source (testsupport.ScriptedSource)'));
+verifyTrue(testCase, contains(printed, 'Runtime:'));
+verifyTrue(testCase, contains(printed, 'ContextKeys:'));
+verifyFalse(testCase, contains(printed, '[1x3 struct]'));
+end
+
+function testPipelineRoutesFinalArtifactsThroughLaterModules(testCase)
+source = testsupport.ScriptedSource({}, 'test');
+emitter = testsupport.FinalizeEmitter();
+probe = testsupport.Probe('artifactProbe', 'test');
+config = defaultLteSenseConfig();
+config.Display.Enabled = false;
+config.Execution.Verbose = false;
+pipeline = ltepipe.Pipeline(config.Execution);
+pipeline.register(source);
+pipeline.register(emitter);
+pipeline.register(probe);
+
+first = pipeline.finalize('completed');
+second = pipeline.finalize('ignored');
+verifyEqual(testCase, second, first);
+verifyEqual(testCase, numel(first), 1);
+verifyEqual(testCase, first{1}.Type, 'test-artifact');
+verifyEqual(testCase, probe.ArtifactCount, 1);
+verifyEqual(testCase, probe.FinalizeCount, 1);
 end
 
 function lock = makeLock(epoch)
@@ -180,7 +257,8 @@ meta = struct('Epoch', epoch, 'Sequence', sequence, ...
     'SubframeNumber', subframe, 'FrameNumber', floor(sequence/10), ...
     'RawStartSample0', sequence*100, ...
     'RawEndSample0', (sequence+1)*100);
-packet = struct('Data', data, 'Meta', meta, 'Quality', struct());
+packet = struct('Type', 'csi-subframe', ...
+    'Data', data, 'Meta', meta, 'Quality', struct());
 end
 
 function packet = makeFrame(receiveCount, sequence, frameIndex)
@@ -204,5 +282,11 @@ data = struct('G1', g1, 'G2', g2, ...
 meta = struct('Epoch', epoch, 'Sequence', sequence, ...
     'EndSequence', sequence+9, 'RawStartSample0', sequence, ...
     'RawEndSample0', sequence+10);
-packet = struct('Data', data, 'Meta', meta, 'Quality', struct());
+packet = struct('Type', 'csi-frame', ...
+    'Data', data, 'Meta', meta, 'Quality', struct());
+end
+
+function packet = makeTestPacket(epoch)
+packet = struct('Type', 'test', 'Data', struct('Value', 1), ...
+    'Meta', struct('Epoch', epoch), 'Quality', struct());
 end

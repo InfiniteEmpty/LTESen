@@ -7,9 +7,20 @@ classdef PassThroughCanceller < ltecancel.InterferenceCanceller
     end
 
     methods
-        function result = push(obj, framePacket)
+        function obj = PassThroughCanceller()
+            obj@ltecancel.InterferenceCanceller('canceller');
+        end
+
+        function result = process(obj, message)
+            obj.validateInput(message);
+            if ~message.HasPacket
+                result = ltepipe.Result.forward(message);
+                return;
+            end
+            framePacket = message.Packet;
             if ~isequal(obj.Epoch, framePacket.Meta.Epoch)
-                obj.reset(framePacket.Meta.Epoch, 'new-epoch');
+                obj.reset(struct('Epoch', framePacket.Meta.Epoch, ...
+                    'Reason', 'new-epoch'));
             end
             packet = framePacket;
             packet.Meta.CancellationApplied = false;
@@ -18,13 +29,16 @@ classdef PassThroughCanceller < ltecancel.InterferenceCanceller
                 'Method', 'passthrough', 'Ready', true, ...
                 'WarmupCount', 0, 'WarmupRequired', 0);
             obj.FrameCount = obj.FrameCount+1;
-            result = struct('Available', true, 'Packet', packet, ...
-                'Status', obj.getStatus());
+            result = ltepipe.Result.forward( ...
+                obj.replaceOutput(message, packet));
         end
 
-        function reset(obj, epoch, reason) %#ok<INUSD>
-            if nargin < 2
+        function reset(obj, event)
+            if nargin < 2 || ~isstruct(event) || ...
+                    ~isfield(event, 'Epoch')
                 epoch = NaN;
+            else
+                epoch = event.Epoch;
             end
             obj.Epoch = epoch;
             obj.FrameCount = 0;
@@ -36,15 +50,8 @@ classdef PassThroughCanceller < ltecancel.InterferenceCanceller
                 'Method', 'passthrough');
         end
 
-        function artifact = finalize(obj, reason)
-            if nargin < 2
-                reason = 'completed';
-            end
-            artifact = struct('Available', false, ...
-                'Type', '', 'Data', struct(), ...
-                'Meta', struct('Epoch', obj.Epoch, ...
-                'FrameCount', obj.FrameCount, ...
-                'Reason', char(reason)));
+        function result = finalize(obj, reason) %#ok<INUSD>
+            result = ltepipe.Result.forward(ltepipe.Message.none());
         end
     end
 end

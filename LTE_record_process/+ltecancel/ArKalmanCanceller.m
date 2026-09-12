@@ -42,14 +42,22 @@ classdef ArKalmanCanceller < ltecancel.InterferenceCanceller
 
     methods
         function obj = ArKalmanCanceller(config)
+            obj@ltecancel.InterferenceCanceller('canceller');
             obj.Config = config;
             obj.initializeScalarState();
         end
 
-        function result = push(obj, framePacket)
+        function result = process(obj, message)
+            obj.validateInput(message);
+            if ~message.HasPacket
+                result = ltepipe.Result.forward(message);
+                return;
+            end
+            framePacket = message.Packet;
             obj.validateFrame(framePacket);
             if ~isequal(obj.Epoch, framePacket.Meta.Epoch)
-                obj.reset(framePacket.Meta.Epoch, 'new-epoch');
+                obj.reset(struct('Epoch', framePacket.Meta.Epoch, ...
+                    'Reason', 'new-epoch'));
             end
             if obj.VectorLength == 0
                 obj.allocate(framePacket.Data);
@@ -77,8 +85,8 @@ classdef ArKalmanCanceller < ltecancel.InterferenceCanceller
 
             if ~obj.Ready && any(strcmpi(obj.Config.WarmupPolicy, ...
                     {'hold', 'drop'}))
-                result = struct('Available', false, 'Packet', struct(), ...
-                    'Status', obj.getStatus());
+                result = ltepipe.Result.forward( ...
+                    ltepipe.Message.clearPacket(message));
                 return;
             end
             packet = framePacket;
@@ -96,13 +104,16 @@ classdef ArKalmanCanceller < ltecancel.InterferenceCanceller
                 obj.LastCancellationGain > 0;
             packet.Meta.CancellationReady = obj.Ready;
             packet.Quality.Cancellation = obj.quality();
-            result = struct('Available', true, 'Packet', packet, ...
-                'Status', obj.getStatus());
+            result = ltepipe.Result.forward( ...
+                obj.replaceOutput(message, packet));
         end
 
-        function reset(obj, epoch, reason) %#ok<INUSD>
-            if nargin < 2
+        function reset(obj, event)
+            if nargin < 2 || ~isstruct(event) || ...
+                    ~isfield(event, 'Epoch')
                 epoch = NaN;
+            else
+                epoch = event.Epoch;
             end
             obj.Epoch = epoch;
             obj.VectorLength = 0;
@@ -153,12 +164,18 @@ classdef ArKalmanCanceller < ltecancel.InterferenceCanceller
             spectrumDb = 10*log10(power/max(power));
         end
 
-        function artifact = finalize(obj, reason)
+        function result = finalize(obj, reason)
             if nargin < 2 || isempty(reason)
                 reason = 'completed';
             end
             if obj.Finalized
                 artifact = obj.FinalArtifact;
+                message = ltepipe.Message.none();
+                if artifact.Available
+                    message = ltepipe.Message.addArtifact( ...
+                        message, artifact);
+                end
+                result = ltepipe.Result.forward(message);
                 return;
             end
             [frequencyHz, spectrumDb] = obj.spectrum();
@@ -172,6 +189,11 @@ classdef ArKalmanCanceller < ltecancel.InterferenceCanceller
                 'Reason', char(reason)));
             obj.FinalArtifact = artifact;
             obj.Finalized = true;
+            message = ltepipe.Message.none();
+            if artifact.Available
+                message = ltepipe.Message.addArtifact(message, artifact);
+            end
+            result = ltepipe.Result.forward(message);
         end
     end
 

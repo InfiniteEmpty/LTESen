@@ -1,4 +1,4 @@
-classdef Processor < handle
+classdef Processor < ltepipe.Module
 %PROCESSOR Build contiguous CSI windows and calculate range-Doppler maps.
 
     properties (SetAccess = private)
@@ -14,22 +14,35 @@ classdef Processor < handle
     end
 
     methods
-        function obj = Processor(config, context)
+        function obj = Processor(config)
+            obj@ltepipe.Module( ...
+                'rangeDoppler', 'csi-frame', 'range-doppler');
             obj.Config = config;
-            obj.Context = context;
             obj.Window = ltebuffer.FrameWindow( ...
                 config.WindowFrames, config.HopFrames);
         end
 
-        function result = push(obj, framePacket)
-            result = obj.emptyResult();
+        function initialize(obj, runtime)
+            initialize@ltepipe.Module(obj, runtime);
+            obj.Context = runtime.getContext('Lte');
+        end
+
+        function result = process(obj, message)
+            obj.validateInput(message);
+            if ~message.HasPacket
+                result = ltepipe.Result.forward(message);
+                return;
+            end
+            framePacket = message.Packet;
+            result = obj.emptyResult(message);
             if obj.Config.RequireCancellationReady && ...
                     (~isfield(framePacket.Meta, 'CancellationReady') || ...
                     ~framePacket.Meta.CancellationReady)
                 return;
             end
             if ~isequal(obj.Epoch, framePacket.Meta.Epoch)
-                obj.reset(framePacket.Meta.Epoch, 'new-epoch');
+                obj.reset(struct('Epoch', framePacket.Meta.Epoch, ...
+                    'Reason', 'new-epoch'));
             end
             windowResult = obj.Window.push( ...
                 framePacket, obj.Config.Group);
@@ -63,27 +76,38 @@ classdef Processor < handle
             meta.WindowFrames = obj.Config.WindowFrames;
             meta.HopFrames = obj.Config.HopFrames;
             obj.OutputCount = obj.OutputCount+1;
-            result.Available = true;
-            result.Packet = struct( ...
+            outputPacket = struct( ...
+                'Type', 'range-doppler', ...
                 'Data', struct('ComplexMap', rdMap, ...
                 'MagnitudeDb', magnitudeDb, ...
                 'RangeMeters', rangeMeters, ...
                 'VelocityMetersPerSecond', velocityMetersPerSecond), ...
                 'Meta', meta, ...
                 'Quality', struct('NoiseFloorDb', obj.NoiseFloorDb, ...
-                'DisplayLimitsDb', displayLimitsDb));
+                    'DisplayLimitsDb', displayLimitsDb));
+            result.Message = obj.replaceOutput( ...
+                result.Message, outputPacket);
         end
 
-        function reset(obj, epoch, reason)
-            if nargin < 2
+        function reset(obj, event)
+            if nargin < 2 || ~isstruct(event) || ...
+                    ~isfield(event, 'Epoch')
                 epoch = NaN;
+            else
+                epoch = event.Epoch;
             end
-            if nargin < 3
+            if nargin < 2 || ~isstruct(event) || ...
+                    ~isfield(event, 'Reason')
                 reason = 'reset';
+            else
+                reason = event.Reason;
             end
             obj.Epoch = epoch;
             obj.NoiseFloorDb = NaN;
             obj.Window.reset(epoch, reason);
+            if ~isempty(obj.Runtime)
+                obj.Context = obj.Runtime.getContext('Lte');
+            end
         end
 
         function status = getStatus(obj)
@@ -111,8 +135,9 @@ classdef Processor < handle
                 velocityResolution;
         end
 
-        function result = emptyResult(obj) %#ok<MANU>
-            result = struct('Available', false, 'Packet', struct());
+        function result = emptyResult(obj, message) %#ok<INUSL>
+            result = ltepipe.Result.forward( ...
+                ltepipe.Message.clearPacket(message));
         end
     end
 end

@@ -1,5 +1,5 @@
 classdef FigureManager < handle
-%FIGUREMANAGER Own and reuse pipeline figures, layouts, and axes.
+%FIGUREMANAGER Build and own configured figures, layouts, and axes.
 
     properties (SetAccess = private)
         Config
@@ -26,6 +26,28 @@ classdef FigureManager < handle
                 'KeyType', 'char', 'ValueType', 'any');
             obj.AxesTiles = containers.Map( ...
                 'KeyType', 'char', 'ValueType', 'double');
+        end
+
+        function viewAxes = createViews(obj, views)
+            if ~isstruct(views) || ~isscalar(views)
+                error('ltevisual:FigureManager:InvalidViews', ...
+                    'View configuration must be a scalar struct.');
+            end
+            viewAxes = struct();
+            viewNames = fieldnames(views);
+            for index = 1:numel(viewNames)
+                name = viewNames{index};
+                view = views.(name);
+                required = {'WindowKey', 'WindowName', 'AxesKey', ...
+                    'GridSize', 'Tile'};
+                if ~isstruct(view) || ~all(isfield(view, required))
+                    error('ltevisual:FigureManager:InvalidView', ...
+                        'View "%s" has an incomplete configuration.', name);
+                end
+                viewAxes.(name) = obj.getOrCreateAxes( ...
+                    view.WindowKey, view.WindowName, view.AxesKey, ...
+                    view.GridSize, view.Tile);
+            end
         end
 
         function figureHandle = getOrCreate(obj, key, name)

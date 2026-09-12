@@ -1,10 +1,9 @@
-classdef (Abstract) InterferenceCanceller < handle
+classdef (Abstract) InterferenceCanceller < ltepipe.Module
 %INTERFERENCECANCELLER Interface for frame-rate cancellation algorithms.
 
-    methods (Abstract)
-        result = push(obj, framePacket)
-        reset(obj, epoch, reason)
-        status = getStatus(obj)
-        artifact = finalize(obj, reason)
+    methods
+        function obj = InterferenceCanceller(name)
+            obj@ltepipe.Module(name, 'csi-frame', 'csi-frame');
+        end
     end
 end
