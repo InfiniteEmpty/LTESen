@@ -1,4 +1,4 @@
-%% LTE CRS sensing using the modular processing pipeline
+%% LTE CRS sensing
 clear;
 clc;
 close all;
@@ -11,6 +11,9 @@ recordName = sprintf('LTE_%s_%06d', dateCode, recordIndex);
 
 dataFile = lteio.openRecording(rootDirectory, recordName, 'auto');
 config = defaultLteSenseConfig();
-config.Cancellation.Method = 'passthrough';
+% Modular processing pipeline
+% config.Cancellation.Method = 'passthrough';
+% Frame-rate AR-Kalman interference cancellation
+config.Cancellation.Method = 'ar-kalman';
 summary = runLteCrsSense(dataFile, config);
 disp(summary);

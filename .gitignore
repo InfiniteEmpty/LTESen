@@ -1,12 +1,8 @@
 # Reference project — do not track
 srsRAN_4G/
 
-# Experiment data
-LTE_record_process/experiment_data/
-
 # MATLAB autosave files
 *.asv
 
-# Generated waveforms and local MATLAB diagnostics
-LTE_record_process/generated_waveforms/
-LTE_record_process/test/
+# Experiment data
+LTE_record_process/experiment_data/
