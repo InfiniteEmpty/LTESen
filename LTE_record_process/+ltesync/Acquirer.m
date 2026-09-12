@@ -17,7 +17,9 @@ classdef Acquirer < handle
             if nargin < 4 || isempty(headStartSample0)
                 headStartSample0 = double(obj.Config.HeadStartSample0);
             end
-            rawSampleRateHz = double(dataFile.sample_rate);
+            reportedRawSampleRateHz = double(dataFile.sample_rate);
+            rawSampleRateHz = lteio.processingSampleRate( ...
+                reportedRawSampleRateHz);
             headStartSample0 = max(0, round(double(headStartSample0)));
             searchSampleCount = round( ...
                 obj.Config.SearchDurationSeconds*rawSampleRateHz);
@@ -121,6 +123,7 @@ classdef Acquirer < handle
             lock.Enb = enb;
             lock.OfdmInfo = ofdmInfo;
             lock.RawSampleRateHz = rawSampleRateHz;
+            lock.ReportedRawSampleRateHz = reportedRawSampleRateHz;
             lock.LteSampleRateHz = lteSampleRateHz;
             lock.RawFrameStartSample0 = headStartSample0 + frameOffsetRawSamples;
             lock.InitialCfoHz = double(initialCfoHz);
