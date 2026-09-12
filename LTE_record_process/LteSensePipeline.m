@@ -7,11 +7,16 @@ classdef LteSensePipeline < handle
         FrameAssembler
         Canceller
         RangeDoppler
-        Viewer
+        FigureManager
+        RangeDopplerViewer
+        ArSpectrumViewer
         ProcessedSubframes = 0
         ProcessedFrames = 0
         ProducedMaps = 0
         LastRangeDoppler = struct()
+        Finalized = false
+        TerminationReason = ''
+        FinalArtifacts = struct()
     end
 
     methods
@@ -27,7 +32,11 @@ classdef LteSensePipeline < handle
             obj.Canceller = obj.createCanceller(config.Cancellation);
             obj.RangeDoppler = lterd.Processor( ...
                 config.RangeDoppler, context);
-            obj.Viewer = lterd.Viewer(config.Display);
+            obj.FigureManager = ltevisual.FigureManager(config.Display);
+            obj.RangeDopplerViewer = ltevisual.RangeDopplerViewer( ...
+                config.Display, obj.FigureManager);
+            obj.ArSpectrumViewer = ltevisual.ArSpectrumViewer( ...
+                config.Display, obj.FigureManager);
             if config.Execution.Verbose
                 fprintf(['LTE receiver locked: NCellID=%d, NDLRB=%d, ' ...
                     'CellRefP=%d, CFO=%.3f Hz, raw start=%d.\n'], ...
@@ -38,6 +47,10 @@ classdef LteSensePipeline < handle
         end
 
         function result = step(obj)
+            if obj.Finalized
+                error('LteSensePipeline:AlreadyFinalized', ...
+                    'The pipeline cannot process data after finalization.');
+            end
             result = struct('EndOfFile', false, ...
                 'Discontinuity', false, 'RangeDopplerAvailable', false, ...
                 'RangeDopplerPacket', struct());
@@ -70,19 +83,44 @@ classdef LteSensePipeline < handle
             end
             obj.ProducedMaps = obj.ProducedMaps+1;
             obj.LastRangeDoppler = rdResult.Packet;
-            obj.Viewer.update(rdResult.Packet);
+            obj.RangeDopplerViewer.update(rdResult.Packet);
             result.RangeDopplerAvailable = true;
             result.RangeDopplerPacket = rdResult.Packet;
         end
 
         function summary = run(obj)
             maximum = obj.Config.Execution.MaximumSubframes;
-            while obj.ProcessedSubframes < maximum && ...
-                    obj.Receiver.hasMoreData()
-                result = obj.step();
-                if result.EndOfFile || obj.Viewer.stopRequested()
-                    break;
+            terminationReason = 'maximum-subframes';
+            try
+                while obj.ProcessedSubframes < maximum && ...
+                        obj.Receiver.hasMoreData()
+                    if obj.RangeDopplerViewer.stopRequested()
+                        terminationReason = 'user-stopped';
+                        break;
+                    end
+                    result = obj.step();
+                    if result.EndOfFile
+                        terminationReason = 'end-of-file';
+                        break;
+                    end
+                    if obj.RangeDopplerViewer.stopRequested()
+                        terminationReason = 'user-stopped';
+                        break;
+                    end
                 end
+                if ~obj.Receiver.hasMoreData()
+                    terminationReason = 'end-of-file';
+                end
+                obj.finalize(terminationReason);
+            catch processingError
+                try
+                    obj.finalize('failed');
+                catch finalizationError
+                    warning('LteSensePipeline:FinalizationFailed', ...
+                        'Finalization after failure also failed: %s', ...
+                        finalizationError.message);
+                end
+                rethrow(processingError);
             end
             summary = obj.getStatus();
             if obj.Config.Execution.Verbose
@@ -92,15 +130,37 @@ classdef LteSensePipeline < handle
             end
         end
 
+        function artifacts = finalize(obj, reason)
+            if nargin < 2 || isempty(reason)
+                reason = 'completed';
+            end
+            if obj.Finalized
+                artifacts = obj.FinalArtifacts;
+                return;
+            end
+            artifacts = struct();
+            artifacts.Cancellation = obj.Canceller.finalize(reason);
+            if artifacts.Cancellation.Available && ...
+                    ~strcmp(reason, 'failed')
+                obj.ArSpectrumViewer.update(artifacts.Cancellation);
+            end
+            obj.FinalArtifacts = artifacts;
+            obj.TerminationReason = char(reason);
+            obj.Finalized = true;
+        end
+
         function status = getStatus(obj)
             status = struct( ...
                 'ProcessedSubframes', obj.ProcessedSubframes, ...
                 'ProcessedFrames', obj.ProcessedFrames, ...
                 'ProducedMaps', obj.ProducedMaps, ...
+                'Finalized', obj.Finalized, ...
+                'TerminationReason', obj.TerminationReason, ...
                 'Receiver', obj.Receiver.getStatus(), ...
                 'Assembler', obj.FrameAssembler.getStatus(), ...
                 'Canceller', obj.Canceller.getStatus(), ...
-                'RangeDoppler', obj.RangeDoppler.getStatus());
+                'RangeDoppler', obj.RangeDoppler.getStatus(), ...
+                'Figures', obj.FigureManager.getStatus());
         end
     end
 

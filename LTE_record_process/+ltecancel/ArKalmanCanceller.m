@@ -10,6 +10,7 @@ classdef ArKalmanCanceller < ltecancel.InterferenceCanceller
         SmoothedCoherence = 0
         RootHz
         YuleWalkerRcond = NaN
+        Finalized = false
     end
 
     properties (Access = private)
@@ -36,6 +37,7 @@ classdef ArKalmanCanceller < ltecancel.InterferenceCanceller
         FirstKalmanGain = NaN
         RootAngles
         RootUpdateCount = 0
+        FinalArtifact = struct()
     end
 
     methods
@@ -150,6 +152,27 @@ classdef ArKalmanCanceller < ltecancel.InterferenceCanceller
             power = 1./max(abs(denominator).^2, 1e-12);
             spectrumDb = 10*log10(power/max(power));
         end
+
+        function artifact = finalize(obj, reason)
+            if nargin < 2 || isempty(reason)
+                reason = 'completed';
+            end
+            if obj.Finalized
+                artifact = obj.FinalArtifact;
+                return;
+            end
+            [frequencyHz, spectrumDb] = obj.spectrum();
+            artifact = struct( ...
+                'Available', ~isempty(frequencyHz), ...
+                'Type', 'ar-interference-spectrum', ...
+                'Data', struct('FrequencyHz', frequencyHz, ...
+                'SpectrumDb', spectrumDb, 'RootHz', obj.RootHz), ...
+                'Meta', struct('Epoch', obj.Epoch, ...
+                'FrameCount', obj.FrameCount, ...
+                'Reason', char(reason)));
+            obj.FinalArtifact = artifact;
+            obj.Finalized = true;
+        end
     end
 
     methods (Access = private)
@@ -180,6 +203,8 @@ classdef ArKalmanCanceller < ltecancel.InterferenceCanceller
             obj.MeasurementWeight = 0;
             obj.FirstKalmanGain = NaN;
             obj.RootUpdateCount = 0;
+            obj.Finalized = false;
+            obj.FinalArtifact = struct();
         end
 
         function allocate(obj, data)

@@ -35,5 +35,16 @@ classdef PassThroughCanceller < ltecancel.InterferenceCanceller
                 'Epoch', obj.Epoch, 'FrameCount', obj.FrameCount, ...
                 'Method', 'passthrough');
         end
+
+        function artifact = finalize(obj, reason)
+            if nargin < 2
+                reason = 'completed';
+            end
+            artifact = struct('Available', false, ...
+                'Type', '', 'Data', struct(), ...
+                'Meta', struct('Epoch', obj.Epoch, ...
+                'FrameCount', obj.FrameCount, ...
+                'Reason', char(reason)));
+        end
     end
 end

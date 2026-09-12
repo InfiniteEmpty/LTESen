@@ -21,6 +21,11 @@ verifyEqual(testCase, second.SubframeNumber, 1);
 verifyEqual(testCase, second.Sequence, 1);
 end
 
+function testReportedSdrRateIsSnappedForResampling(testCase)
+reportedRate = 15360000.011967678;
+verifyEqual(testCase, lteio.processingSampleRate(reportedRate), 15360000);
+end
+
 function testAssemblerEmitsOnlyCompleteFrame(testCase)
 assembler = ltebuffer.CsiFrameAssembler();
 for subframe = 0:8
@@ -81,6 +86,82 @@ packet = makeCancellationFrame(2, 0, 0);
 canceller.push(packet);
 verifyEqual(testCase, canceller.Epoch, 2);
 verifyEqual(testCase, canceller.FrameCount, 1);
+end
+
+function testCancellerFinalizeIsIdempotent(testCase)
+config = defaultLteSenseConfig();
+canceller = ltecancel.ArKalmanCanceller(config.Cancellation);
+first = canceller.finalize('completed');
+second = canceller.finalize('different-reason');
+verifyEqual(testCase, second, first);
+verifyFalse(testCase, first.Available);
+verifyTrue(testCase, canceller.Finalized);
+end
+
+function testFigureManagerOwnsAndRemembersClosedFigure(testCase)
+config = defaultLteSenseConfig();
+config.Display.FigureVisible = 'off';
+manager = ltevisual.FigureManager(config.Display);
+cleanup = onCleanup(@() manager.closeAll());
+first = manager.getOrCreate('unit-test', 'Unit Test Figure');
+verifyTrue(testCase, isgraphics(first));
+verifyEqual(testCase, manager.getOrCreate( ...
+    'unit-test', 'Ignored Name'), first);
+close(first);
+verifyTrue(testCase, manager.wasClosed('unit-test'));
+verifyEmpty(testCase, manager.getOrCreate( ...
+    'unit-test', 'Must Not Reopen'));
+manager.forget('unit-test');
+second = manager.getOrCreate('unit-test', 'Reopened Figure');
+verifyTrue(testCase, isgraphics(second));
+clear cleanup;
+end
+
+function testViewersShareWindowAndReuseAxes(testCase)
+config = defaultLteSenseConfig();
+config.Display.FigureVisible = 'off';
+manager = ltevisual.FigureManager(config.Display);
+cleanup = onCleanup(@() manager.closeAll());
+rdViewer = ltevisual.RangeDopplerViewer(config.Display, manager);
+arViewer = ltevisual.ArSpectrumViewer(config.Display, manager);
+
+rdPacket = struct( ...
+    'Data', struct( ...
+        'VelocityMetersPerSecond', [-1, 1], ...
+        'RangeMeters', [0, 2], ...
+        'MagnitudeDb', [-20, -10; -5, 0]), ...
+    'Meta', struct('Epoch', 1, 'EndSequence', 99), ...
+    'Quality', struct('DisplayLimitsDb', [-30, 5]));
+arArtifact = struct( ...
+    'Available', true, ...
+    'Type', 'ar-interference-spectrum', ...
+    'Data', struct( ...
+        'FrequencyHz', [-100, 0, 100], ...
+        'SpectrumDb', [-20, 0, -20], ...
+        'RootHz', [-20; 25]), ...
+    'Meta', struct());
+
+rdViewer.update(rdPacket);
+arViewer.update(arArtifact);
+rdAxes = rdViewer.AxesHandle;
+arAxes = arViewer.AxesHandle;
+verifyTrue(testCase, isgraphics(rdAxes));
+verifyTrue(testCase, isgraphics(arAxes));
+verifyNotEqual(testCase, rdAxes, arAxes);
+verifyEqual(testCase, ancestor(rdAxes, 'figure'), ...
+    ancestor(arAxes, 'figure'));
+verifyEqual(testCase, manager.getStatus().Keys, {'live-monitor'});
+
+rdViewer.update(rdPacket);
+arViewer.update(arArtifact);
+verifyEqual(testCase, rdViewer.AxesHandle, rdAxes);
+verifyEqual(testCase, arViewer.AxesHandle, arAxes);
+verifyEqual(testCase, rdViewer.UpdateCount, 2);
+verifyEqual(testCase, arViewer.UpdateCount, 2);
+
+close(ancestor(rdAxes, 'figure'));
+verifyTrue(testCase, rdViewer.stopRequested());
+clear cleanup;
 end
 
 function lock = makeLock(epoch)
