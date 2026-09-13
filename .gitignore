@@ -6,3 +6,6 @@ srsRAN_4G/
 
 # Experiment data
 LTE_record_process/experiment_data/
+
+# Generated manual-test and experiment outputs
+LTE_record_process/tests/outputs/
