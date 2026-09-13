@@ -1,4 +1,4 @@
-classdef ArKalmanCanceller < ltecancel.InterferenceCanceller
+classdef ArKalmanCanceller < ltepipe.Module
 %ARKALMANCANCELLER Frame-rate recursive AR/Kalman interference canceller.
 
     properties (SetAccess = private)
@@ -9,7 +9,9 @@ classdef ArKalmanCanceller < ltecancel.InterferenceCanceller
         LastCancellationGain = 0
         SmoothedCoherence = 0
         RootHz
+        RootMagnitudes
         YuleWalkerRcond = NaN
+        SpectrumUpdateCount = 0
         Finalized = false
     end
 
@@ -42,7 +44,13 @@ classdef ArKalmanCanceller < ltecancel.InterferenceCanceller
 
     methods
         function obj = ArKalmanCanceller(config)
-            obj@ltecancel.InterferenceCanceller('canceller');
+            obj@ltepipe.Module('canceller', 'csi-frame', 'csi-frame');
+            validateattributes(config.SpectrumUpdatePeriodFrames, ...
+                {'numeric'}, {'scalar', 'integer', 'positive'});
+            validateattributes(config.SpectrumLinearScaleHz, ...
+                {'numeric'}, {'scalar', 'real', 'finite', 'positive'});
+            validateattributes(config.SpectrumGridSize, {'numeric'}, ...
+                {'scalar', 'integer', '>=', 3});
             obj.Config = config;
             obj.initializeScalarState();
         end
@@ -83,10 +91,17 @@ classdef ArKalmanCanceller < ltecancel.InterferenceCanceller
             obj.updateHistory(filteredDynamic);
             obj.Ready = updateApplied;
 
+            spectrumDue = mod(obj.FrameCount, ...
+                obj.Config.SpectrumUpdatePeriodFrames) == 0;
+
             if ~obj.Ready && any(strcmpi(obj.Config.WarmupPolicy, ...
                     {'hold', 'drop'}))
-                result = ltepipe.Result.forward( ...
-                    ltepipe.Message.clearPacket(message));
+                outputMessage = ltepipe.Message.clearPacket(message);
+                if spectrumDue
+                    outputMessage = obj.appendSpectrumArtifact( ...
+                        outputMessage, 'periodic');
+                end
+                result = ltepipe.Result.forward(outputMessage);
                 return;
             end
             packet = framePacket;
@@ -104,8 +119,12 @@ classdef ArKalmanCanceller < ltecancel.InterferenceCanceller
                 obj.LastCancellationGain > 0;
             packet.Meta.CancellationReady = obj.Ready;
             packet.Quality.Cancellation = obj.quality();
-            result = ltepipe.Result.forward( ...
-                obj.replaceOutput(message, packet));
+            outputMessage = obj.replaceOutput(message, packet);
+            if spectrumDue
+                outputMessage = obj.appendSpectrumArtifact( ...
+                    outputMessage, 'periodic');
+            end
+            result = ltepipe.Result.forward(outputMessage);
         end
 
         function reset(obj, event)
@@ -138,9 +157,11 @@ classdef ArKalmanCanceller < ltecancel.InterferenceCanceller
                 'FirstKalmanGain', obj.FirstKalmanGain, ...
                 'MeasurementVariance', obj.MeasurementVariance, ...
                 'RootHz', obj.RootHz, ...
+                'RootMagnitudes', obj.RootMagnitudes, ...
                 'YuleWalkerRcond', obj.YuleWalkerRcond, ...
                 'CorrelationUpdateCount', obj.CorrelationUpdateCount, ...
                 'RootUpdateCount', obj.RootUpdateCount, ...
+                'SpectrumUpdateCount', obj.SpectrumUpdateCount, ...
                 'Method', 'ar-kalman');
         end
 
@@ -151,15 +172,17 @@ classdef ArKalmanCanceller < ltecancel.InterferenceCanceller
                 return;
             end
             period = obj.Config.FramePeriodSeconds;
-            frequencyHz = linspace(-1/(2*period), 1/(2*period), ...
-                obj.Config.SpectrumGridSize);
-            rootsForDisplay = obj.Config.SpectrumPoleRadius * ...
-                exp(1i*obj.RootAngles);
-            polynomial = poly(rootsForDisplay);
-            coefficients = -polynomial(2:end).';
+            maximumFrequencyHz = 1/(2*period);
+            linearScaleHz = obj.Config.SpectrumLinearScaleHz;
+            maximumCoordinate = asinh(maximumFrequencyHz/linearScaleHz);
+            frequencyCoordinate = linspace(-maximumCoordinate, ...
+                maximumCoordinate, obj.Config.SpectrumGridSize);
+            frequencyHz = linearScaleHz*sinh(frequencyCoordinate);
             lag = (1:obj.Config.ArOrder).';
             kernel = exp(-1i*2*pi*period*lag*frequencyHz);
-            denominator = 1-coefficients.'*kernel;
+            % 直接使用递推估计的 AR 系数。这里不移动、删除或收缩
+            % z=1 附近的根，因为它表示帧周期干扰的一部分。
+            denominator = 1-obj.ArCoefficients.'*kernel;
             power = 1./max(abs(denominator).^2, 1e-12);
             spectrumDb = 10*log10(power/max(power));
         end
@@ -178,15 +201,7 @@ classdef ArKalmanCanceller < ltecancel.InterferenceCanceller
                 result = ltepipe.Result.forward(message);
                 return;
             end
-            [frequencyHz, spectrumDb] = obj.spectrum();
-            artifact = struct( ...
-                'Available', ~isempty(frequencyHz), ...
-                'Type', 'ar-interference-spectrum', ...
-                'Data', struct('FrequencyHz', frequencyHz, ...
-                'SpectrumDb', spectrumDb, 'RootHz', obj.RootHz), ...
-                'Meta', struct('Epoch', obj.Epoch, ...
-                'FrameCount', obj.FrameCount, ...
-                'Reason', char(reason)));
+            artifact = obj.createSpectrumArtifact(reason);
             obj.FinalArtifact = artifact;
             obj.Finalized = true;
             message = ltepipe.Message.none();
@@ -205,6 +220,7 @@ classdef ArKalmanCanceller < ltecancel.InterferenceCanceller
             obj.LastCancellationGain = 0;
             obj.SmoothedCoherence = 0;
             obj.RootHz = nan(order, 1);
+            obj.RootMagnitudes = nan(order, 1);
             obj.RootAngles = nan(order, 1);
             obj.YuleWalkerRcond = NaN;
             obj.RetainedSketchSize = 0;
@@ -225,8 +241,33 @@ classdef ArKalmanCanceller < ltecancel.InterferenceCanceller
             obj.MeasurementWeight = 0;
             obj.FirstKalmanGain = NaN;
             obj.RootUpdateCount = 0;
+            obj.SpectrumUpdateCount = 0;
             obj.Finalized = false;
             obj.FinalArtifact = struct();
+        end
+
+        function message = appendSpectrumArtifact(obj, message, reason)
+            artifact = obj.createSpectrumArtifact(reason);
+            if artifact.Available
+                message = ltepipe.Message.addArtifact(message, artifact);
+                obj.SpectrumUpdateCount = obj.SpectrumUpdateCount+1;
+            end
+        end
+
+        function artifact = createSpectrumArtifact(obj, reason)
+            [frequencyHz, spectrumDb] = obj.spectrum();
+            artifact = struct( ...
+                'Available', ~isempty(frequencyHz), ...
+                'Type', 'ar-interference-spectrum', ...
+                'Data', struct('FrequencyHz', frequencyHz, ...
+                'SpectrumDb', spectrumDb, 'RootHz', obj.RootHz, ...
+                'RootMagnitudes', obj.RootMagnitudes, ...
+                'FrequencyAxis', 'asinh', ...
+                'FrequencyLinearScaleHz', ...
+                obj.Config.SpectrumLinearScaleHz), ...
+                'Meta', struct('Epoch', obj.Epoch, ...
+                'FrameCount', obj.FrameCount, ...
+                'Reason', char(reason)));
         end
 
         function allocate(obj, data)
@@ -409,10 +450,12 @@ classdef ArKalmanCanceller < ltecancel.InterferenceCanceller
                 all(abs(candidateRoots) > 0.05) && ...
                 all(abs(candidateRoots) < 20);
             if usable
-                candidateRoots = candidateRoots./abs(candidateRoots);
-                stablePolynomial = poly(candidateRoots);
-                obj.ArCoefficients = -stablePolynomial(2:end).';
-                obj.RootAngles = sort(angle(candidateRoots));
+                % 保留 Yule-Walker 直接估计的 AR 系数和全部根，包括
+                % z=1 附近代表帧周期成分的根；不投影或删除所谓 DC 根。
+                obj.ArCoefficients = candidateCoefficients;
+                [rootAngles, rootOrder] = sort(angle(candidateRoots));
+                obj.RootAngles = rootAngles;
+                obj.RootMagnitudes = abs(candidateRoots(rootOrder));
                 obj.RootHz = obj.RootAngles / ...
                     (2*pi*obj.Config.FramePeriodSeconds);
             end
@@ -444,6 +487,7 @@ classdef ArKalmanCanceller < ltecancel.InterferenceCanceller
                 'FirstKalmanGain', obj.FirstKalmanGain, ...
                 'MeasurementVariance', obj.MeasurementVariance, ...
                 'RootHz', obj.RootHz, ...
+                'RootMagnitudes', obj.RootMagnitudes, ...
                 'YuleWalkerRcond', obj.YuleWalkerRcond);
         end
 
