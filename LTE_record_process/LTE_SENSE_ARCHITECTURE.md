@@ -15,17 +15,18 @@ config = defaultLteSenseConfig();
 config.Cancellation.Method = 'ar-kalman';
 config.Display.Enabled = false;
 
-figureManager = ltevisual.FigureManager(config.Display);
-viewAxes = figureManager.createViews(config.Display.Views);
+rangeDopplerAxes = struct('Main', gobjects(0));
+arAxes = struct('Spectrum', gobjects(0));
+% When display is enabled, create the shared figure, tiled layout, and axes.
 pipeline = ltepipe.Pipeline(config.Execution);
 pipeline.register(ltetracking.Receiver(dataFile, config));
 pipeline.register(ltebuffer.CsiFrameAssembler());
 pipeline.register(ltecancel.ArKalmanCanceller(config.Cancellation));
 pipeline.register(ltecancel.ArSpectrumViewer( ...
-    config.Display, viewAxes.ArSpectrum));
+    config.Display, arAxes));
 pipeline.register(lterd.Processor(config.RangeDoppler));
 pipeline.register(lterd.Viewer( ...
-    config.Display, viewAxes.RangeDoppler));
+    config.Display, rangeDopplerAxes));
 summary = pipeline.run();
 ```
 
@@ -40,7 +41,7 @@ summary = pipeline.run();
 - `+ltebuffer`: contiguous subframe-to-frame and frame-to-window assembly.
 - `+ltecancel`: interchangeable frame-rate cancellers and their AR viewer.
 - `+lterd`: range-Doppler calculation and its packet viewer.
-- `+ltevisual`: shared figure, tiled-layout, and axes ownership.
+- `+ltevisual`: common viewer lifecycle and pass-through behavior.
 
 `ltepipe.Pipeline` is a general connector rather than an LTE algorithm
 coordinator. It lives beside the message and module protocols because it has no
@@ -102,23 +103,22 @@ The policy can be changed to `hold` or `drop`.
 
 ## Finalization and figures
 
-`LteSensePipeline.run` always calls the idempotent `finalize` lifecycle method.
+`ltepipe.Pipeline.run` always calls the idempotent `finalize` lifecycle method.
 Computational modules return final artifacts without drawing them. The pipeline
 routes each final message through the remaining modules, so the AR/Kalman
 canceller's spectrum reaches `ltecancel.ArSpectrumViewer` without a special
 Pipeline branch.
 
-`LTE_CRS_sense.m` constructs one `ltevisual.FigureManager` and asks it to create
-all axes described by `config.Display.Views`. The resulting axes are injected
-directly into their viewers. The manager owns figure and tiled-layout handles,
-while each viewer owns only its assigned axes and plot objects. The default
-display maps the range-Doppler and AR spectrum views to two axes in one
-`live-monitor` window.
+`LTE_CRS_sense.m` explicitly creates the shared figure, tiled layout, and axes,
+then injects each viewer's axes as a named struct. A viewer that owns several
+plots can receive, for example, `struct('Spectrum', spectrumAxes, 'PoleMap',
+poleAxes)`. This fixed layout is part of the composition root rather than a
+runtime service.
 
-Viewers never select the current figure or axes. They render only into the axes
-provided by the manager and retain their image/line handles so live updates
-replace plot data instead of recreating graphics objects. Plot-specific logic
-therefore remains outside the manager.
+`ltevisual.ViewerBase` owns the common axes/figure lifecycle, message
+pass-through, update count, status, and user-close detection. Domain viewers
+render only into their injected axes and retain their image/line handles so
+live updates replace plot data instead of recreating graphics objects.
 
 ## Synchronization status
 
@@ -131,6 +131,8 @@ the next synchronization milestone.
 ## Tests and deferred experiments
 
 Active tests are under `tests/unit` and run through
-`tests/run_all_unit_tests.m`. The previous continuous-CSI research branch is
+`tests/run_all_unit_tests.m`. Manually generated experiment results belong in
+the ignored `tests/outputs` directory; fixed inputs required by automated tests
+belong in `tests/fixtures`. The previous continuous-CSI research branch is
 preserved under `todo/continuous_csi`; it is intentionally excluded from the
 active path and dependency guarantees.

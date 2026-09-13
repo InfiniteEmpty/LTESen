@@ -1,12 +1,5 @@
-classdef ArSpectrumViewer < ltepipe.Module
+classdef ArSpectrumViewer < ltevisual.ViewerBase
 %ARSPECTRUMVIEWER Render AR spectrum artifacts and pass messages through.
-
-    properties (SetAccess = private)
-        Config
-        UpdateCount = 0
-        AxesHandle = []
-        AxesWasCreated = false
-    end
 
     properties (Access = private)
         SpectrumLine = []
@@ -14,93 +7,112 @@ classdef ArSpectrumViewer < ltepipe.Module
     end
 
     methods
-        function obj = ArSpectrumViewer(config, axesHandle)
-            obj@ltepipe.Module( ...
-                'arSpectrumViewer', 'csi-frame', 'csi-frame');
-            obj.Config = config;
-            obj.AxesHandle = axesHandle;
-            obj.AxesWasCreated = ...
-                ~isempty(axesHandle) && isgraphics(axesHandle);
+        function obj = ArSpectrumViewer(config, axesGroup)
+            obj@ltevisual.ViewerBase( ...
+                'arSpectrumViewer', 'csi-frame', 'csi-frame', ...
+                config, axesGroup);
+            obj.getAxes('Spectrum');
         end
+    end
 
-        function result = process(obj, message)
-            obj.validateInput(message);
-            if obj.Config.Enabled
-                for index = 1:numel(message.Artifacts)
-                    artifact = message.Artifacts{index};
-                    if isstruct(artifact) && ...
-                            isfield(artifact, 'Type') && ...
-                            strcmp(artifact.Type, ...
-                            'ar-interference-spectrum') && ...
-                            ~obj.isFailureArtifact(artifact)
-                        obj.render(artifact);
-                    end
+    methods (Access = protected)
+        function updates = updateView(obj, message)
+            updates = 0;
+            for index = 1:numel(message.Artifacts)
+                artifact = message.Artifacts{index};
+                if isstruct(artifact) && ...
+                        isfield(artifact, 'Type') && ...
+                        strcmp(artifact.Type, ...
+                        'ar-interference-spectrum') && ...
+                        ~obj.isFailureArtifact(artifact) && ...
+                        obj.render(obj.getAxes('Spectrum'), artifact)
+                    updates = updates+1;
                 end
             end
-            if obj.viewWasClosed()
-                result = ltepipe.Result.stop(message, 'user-stopped');
-            else
-                result = ltepipe.Result.forward(message);
-            end
-        end
-
-        function status = getStatus(obj)
-            status = struct('State', 'ready', 'Ready', true, ...
-                'UpdateCount', obj.UpdateCount, ...
-                'AxesAvailable', ~isempty(obj.AxesHandle) && ...
-                isgraphics(obj.AxesHandle), ...
-                'AxesWasCreated', obj.AxesWasCreated);
         end
     end
 
     methods (Access = private)
-        function render(obj, artifact)
+        function rendered = render(obj, axesHandle, artifact)
+            rendered = false;
             if ~isfield(artifact, 'Available') || ~artifact.Available
                 return;
             end
-            if isempty(obj.AxesHandle) || ~isgraphics(obj.AxesHandle)
-                return;
-            end
+            [frequencyCoordinate, rootCoordinate, tickCoordinate, ...
+                tickLabels, frequencyLabel] = obj.axisData(artifact);
             if isempty(obj.SpectrumLine) || ...
                     ~isgraphics(obj.SpectrumLine)
-                obj.initializeGraphics(obj.AxesHandle, artifact);
+                obj.initializeGraphics(axesHandle, artifact, ...
+                    frequencyCoordinate, rootCoordinate);
             else
                 set(obj.SpectrumLine, ...
-                    'XData', artifact.Data.FrequencyHz, ...
+                    'XData', frequencyCoordinate, ...
                     'YData', artifact.Data.SpectrumDb);
                 set(obj.RootMarkers, ...
-                    'XData', artifact.Data.RootHz, ...
+                    'XData', rootCoordinate, ...
                     'YData', zeros(size(artifact.Data.RootHz)));
-                xlim(obj.AxesHandle, ...
-                    artifact.Data.FrequencyHz([1, end]));
+                xlim(axesHandle, ...
+                    frequencyCoordinate([1, end]));
             end
+            xticks(axesHandle, tickCoordinate);
+            xticklabels(axesHandle, tickLabels);
+            xlabel(axesHandle, frequencyLabel);
             drawnow limitrate;
-            obj.UpdateCount = obj.UpdateCount+1;
+            rendered = true;
         end
 
-        function initializeGraphics(obj, axesHandle, artifact)
-            obj.AxesHandle = axesHandle;
+        function initializeGraphics(obj, axesHandle, artifact, ...
+                frequencyCoordinate, rootCoordinate)
             obj.SpectrumLine = plot(axesHandle, ...
-                artifact.Data.FrequencyHz, artifact.Data.SpectrumDb, ...
+                frequencyCoordinate, artifact.Data.SpectrumDb, ...
                 'LineWidth', 1.2);
             hold(axesHandle, 'on');
-            obj.RootMarkers = stem(axesHandle, artifact.Data.RootHz, ...
+            obj.RootMarkers = stem(axesHandle, rootCoordinate, ...
                 zeros(size(artifact.Data.RootHz)), ...
                 'r', 'filled', 'LineWidth', 1);
             hold(axesHandle, 'off');
             grid(axesHandle, 'on');
-            xlim(axesHandle, artifact.Data.FrequencyHz([1, end]));
+            xlim(axesHandle, frequencyCoordinate([1, end]));
             ylim(axesHandle, [-60, 5]);
-            xlabel(axesHandle, 'CFO (Hz)');
             ylabel(axesHandle, 'Normalized AR spectrum (dB)');
             title(axesHandle, 'AR Interference CFO Spectrum');
             legend(axesHandle, [obj.SpectrumLine, obj.RootMarkers], ...
                 {'AR spectrum', 'AR roots'}, 'Location', 'best');
         end
 
-        function value = viewWasClosed(obj)
-            value = obj.Config.Enabled && obj.AxesWasCreated && ...
-                ~isgraphics(obj.AxesHandle);
+        function [frequencyCoordinate, rootCoordinate, tickCoordinate, ...
+                tickLabels, frequencyLabel] = axisData(obj, artifact) %#ok<INUSL>
+            frequencyHz = artifact.Data.FrequencyHz;
+            rootHz = artifact.Data.RootHz;
+            useAsinh = isfield(artifact.Data, 'FrequencyAxis') && ...
+                strcmpi(char(artifact.Data.FrequencyAxis), 'asinh') && ...
+                isfield(artifact.Data, 'FrequencyLinearScaleHz') && ...
+                isfinite(artifact.Data.FrequencyLinearScaleHz) && ...
+                artifact.Data.FrequencyLinearScaleHz > 0;
+            if ~useAsinh
+                frequencyCoordinate = frequencyHz;
+                rootCoordinate = rootHz;
+                tickCoordinate = linspace(frequencyHz(1), ...
+                    frequencyHz(end), 5);
+                tickLabels = compose('%g', tickCoordinate);
+                frequencyLabel = 'CFO (Hz)';
+                return;
+            end
+
+            linearScaleHz = artifact.Data.FrequencyLinearScaleHz;
+            frequencyCoordinate = asinh(frequencyHz/linearScaleHz);
+            rootCoordinate = asinh(rootHz/linearScaleHz);
+            maximumFrequencyHz = max(abs(frequencyHz));
+            maximumDecade = max(0, floor(log10( ...
+                maximumFrequencyHz/linearScaleHz)));
+            positiveTicksHz = linearScaleHz*10.^(0:maximumDecade);
+            positiveTicksHz = positiveTicksHz( ...
+                positiveTicksHz < maximumFrequencyHz);
+            positiveTicksHz = [positiveTicksHz, maximumFrequencyHz];
+            tickHz = [-fliplr(positiveTicksHz), 0, positiveTicksHz];
+            tickCoordinate = asinh(tickHz/linearScaleHz);
+            tickLabels = compose('%g', tickHz);
+            frequencyLabel = 'CFO (Hz, asinh scale)';
         end
 
         function value = isFailureArtifact(obj, artifact) %#ok<INUSL>

@@ -1,12 +1,5 @@
-classdef Viewer < ltepipe.Module
+classdef Viewer < ltevisual.ViewerBase
 %VIEWER Render range-Doppler packets without changing the message.
-
-    properties (SetAccess = private)
-        Config
-        UpdateCount = 0
-        AxesHandle = []
-        AxesWasCreated = false
-    end
 
     properties (Access = private)
         ImageHandle = []
@@ -15,62 +8,45 @@ classdef Viewer < ltepipe.Module
     end
 
     methods
-        function obj = Viewer(config, axesHandle)
-            obj@ltepipe.Module( ...
+        function obj = Viewer(config, axesGroup)
+            obj@ltevisual.ViewerBase( ...
                 'rangeDopplerViewer', ...
-                'range-doppler', 'range-doppler');
-            obj.Config = config;
-            obj.AxesHandle = axesHandle;
-            obj.AxesWasCreated = ...
-                ~isempty(axesHandle) && isgraphics(axesHandle);
+                'range-doppler', 'range-doppler', config, axesGroup);
+            obj.getAxes('Main');
         end
+    end
 
-        function result = process(obj, message)
-            obj.validateInput(message);
-            if obj.Config.Enabled && message.HasPacket
-                obj.render(message.Packet);
+    methods (Access = protected)
+        function updates = updateView(obj, message)
+            updates = 0;
+            if ~message.HasPacket
+                return;
             end
-            if obj.viewWasClosed()
-                result = ltepipe.Result.stop(message, 'user-stopped');
-            else
-                result = ltepipe.Result.forward(message);
-            end
-        end
-
-        function status = getStatus(obj)
-            status = struct('State', 'ready', 'Ready', true, ...
-                'UpdateCount', obj.UpdateCount, ...
-                'AxesAvailable', ~isempty(obj.AxesHandle) && ...
-                isgraphics(obj.AxesHandle), ...
-                'AxesWasCreated', obj.AxesWasCreated);
+            obj.render(obj.getAxes('Main'), message.Packet);
+            updates = 1;
         end
     end
 
     methods (Access = private)
-        function render(obj, packet)
-            if isempty(obj.AxesHandle) || ~isgraphics(obj.AxesHandle)
-                return;
-            end
+        function render(obj, axesHandle, packet)
             if isempty(obj.ImageHandle) || ...
                     ~isgraphics(obj.ImageHandle)
-                obj.initializeGraphics(obj.AxesHandle, packet);
+                obj.initializeGraphics(axesHandle, packet);
             else
                 set(obj.ImageHandle, ...
                     'XData', packet.Data.VelocityMetersPerSecond, ...
                     'YData', packet.Data.RangeMeters, ...
                     'CData', packet.Data.MagnitudeDb);
-                set(obj.AxesHandle, ...
+                set(axesHandle, ...
                     'CLim', packet.Quality.DisplayLimitsDb);
             end
             obj.TitleHandle.String = sprintf( ...
                 'Dynamic Range-Doppler Spectrum (epoch %d, sequence %d)', ...
                 packet.Meta.Epoch, packet.Meta.EndSequence);
             drawnow limitrate;
-            obj.UpdateCount = obj.UpdateCount+1;
         end
 
         function initializeGraphics(obj, axesHandle, packet)
-            obj.AxesHandle = axesHandle;
             obj.ImageHandle = imagesc(axesHandle, ...
                 packet.Data.VelocityMetersPerSecond, ...
                 packet.Data.RangeMeters, packet.Data.MagnitudeDb);
@@ -81,11 +57,6 @@ classdef Viewer < ltepipe.Module
             obj.TitleHandle = title(axesHandle, '');
             xlabel(axesHandle, 'Velocity (m/s)');
             ylabel(axesHandle, 'Range (m)');
-        end
-
-        function value = viewWasClosed(obj)
-            value = obj.Config.Enabled && obj.AxesWasCreated && ...
-                ~isgraphics(obj.AxesHandle);
         end
     end
 end

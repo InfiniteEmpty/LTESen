@@ -97,6 +97,116 @@ verifyEqual(testCase, canceller.Epoch, 2);
 verifyEqual(testCase, canceller.FrameCount, 1);
 end
 
+function testArKalmanEmitsDirectSpectrumEveryTenFrames(testCase)
+config = defaultLteSenseConfig();
+config.Cancellation.ArOrder = 1;
+config.Cancellation.WarmupFrames = 3;
+config.Cancellation.RootUpdatePeriod = 1;
+config.Cancellation.SpectrumUpdatePeriodFrames = 10;
+canceller = ltecancel.ArKalmanCanceller(config.Cancellation);
+
+for frameIndex = 0:19
+    packet = makeCancellationFrame(1, frameIndex*10, frameIndex);
+    result = canceller.process(ltepipe.Message.fromPacket(packet));
+    if any(frameIndex+1 == [10, 20])
+        verifyNumElements(testCase, result.Message.Artifacts, 1);
+        artifact = result.Message.Artifacts{1};
+        verifyEqual(testCase, artifact.Type, ...
+            'ar-interference-spectrum');
+        verifyEqual(testCase, artifact.Meta.Reason, 'periodic');
+        verifyEqual(testCase, artifact.Meta.FrameCount, frameIndex+1);
+        verifyEqual(testCase, artifact.Data.FrequencyAxis, 'asinh');
+        verifyEqual(testCase, ...
+            artifact.Data.FrequencyHz((end+1)/2), 0, 'AbsTol', eps);
+        centerStep = artifact.Data.FrequencyHz((end+3)/2);
+        edgeStep = artifact.Data.FrequencyHz(end) - ...
+            artifact.Data.FrequencyHz(end-1);
+        verifyLessThan(testCase, centerStep, edgeStep);
+    else
+        verifyEmpty(testCase, result.Message.Artifacts);
+    end
+end
+verifyEqual(testCase, canceller.SpectrumUpdateCount, 2);
+verifyTrue(testCase, all(isfinite(canceller.RootMagnitudes)));
+end
+
+function testArKalmanDoesNotProjectNearOneRoot(testCase)
+config = defaultLteSenseConfig();
+config.Cancellation.ArOrder = 1;
+config.Cancellation.WarmupFrames = 3;
+config.Cancellation.RootUpdatePeriod = 1;
+config.Cancellation.DiagonalLoading = 0;
+canceller = ltecancel.ArKalmanCanceller(config.Cancellation);
+
+amplitudeRatio = 0.99;
+cyclesPerFrame = 1e-3;
+for frameIndex = 0:2
+    packet = makeCancellationFrame(1, frameIndex*10, frameIndex);
+    adjustment = amplitudeRatio^frameIndex * exp(1i*2*pi* ...
+        (cyclesPerFrame-0.13)*frameIndex);
+    packet.Data.G1 = adjustment*packet.Data.G1;
+    packet.Data.G2 = adjustment*packet.Data.G2;
+    packet.Data.DynamicG1 = adjustment*packet.Data.DynamicG1;
+    packet.Data.DynamicG2 = adjustment*packet.Data.DynamicG2;
+    canceller.process(ltepipe.Message.fromPacket(packet));
+end
+
+verifyEqual(testCase, canceller.RootMagnitudes, 1/amplitudeRatio, ...
+    'RelTol', 1e-10);
+verifyEqual(testCase, canceller.RootHz, cyclesPerFrame / ...
+    config.Cancellation.FramePeriodSeconds, 'AbsTol', 1e-10);
+end
+
+function testDynamicMusicSpectrumTracksPositiveCfo(testCase)
+config = defaultLteSenseConfig();
+config.Display.FigureVisible = 'off';
+config.Music.SampleIntervalFrames = 1;
+config.Music.CovarianceOrder = 8;
+config.Music.SignalCount = 1;
+config.Music.CorrelationForgetting = 1;
+config.Music.FrequencyLimitHz = 5;
+config.Music.SpectrumGridSize = 2001;
+musicFigure = figure('Visible', 'off');
+cleanup = onCleanup(@() close(musicFigure));
+musicLayout = tiledlayout(musicFigure, 1, 2);
+singularValueAxes = nexttile(musicLayout, 1);
+musicAxes = nexttile(musicLayout, 2);
+viewer = ltecancel.MusicSpectrumViewer( ...
+    config.Music, config.Display, struct( ...
+    'Spectrum', musicAxes, ...
+    'SingularValues', singularValueAxes));
+
+expectedCfoHz = 2;
+cyclesPerFrame = expectedCfoHz*config.Music.FramePeriodSeconds;
+for frameIndex = 0:11
+    packet = makeCancellationFrame(1, frameIndex*10, frameIndex);
+    adjustment = exp(1i*2*pi*(cyclesPerFrame-0.13)*frameIndex);
+    packet.Data.G1 = adjustment*packet.Data.G1;
+    packet.Data.G2 = adjustment*packet.Data.G2;
+    packet.Data.DynamicG1 = adjustment*packet.Data.DynamicG1;
+    packet.Data.DynamicG2 = adjustment*packet.Data.DynamicG2;
+    viewer.process(ltepipe.Message.fromPacket(packet));
+end
+
+[~, peakIndex] = max(viewer.SpectrumDb);
+verifyEqual(testCase, viewer.FrequencyHz(peakIndex), expectedCfoHz, ...
+    'AbsTol', 0.01);
+verifySize(testCase, viewer.SingularValues, ...
+    [config.Music.CovarianceOrder, 1]);
+verifyEqual(testCase, viewer.SingularValuesDb(1), 0, 'AbsTol', 1e-10);
+verifyGreaterThan(testCase, viewer.SingularValuesDb(1), ...
+    viewer.SingularValuesDb(2));
+verifyTrue(testCase, issorted(viewer.SingularValues, 'descend'));
+verifyEqual(testCase, singularValueAxes.YLabel.String, ...
+    'Normalized singular value (dB)');
+verifyEqual(testCase, singularValueAxes.XLim, ...
+    [1, config.Music.CovarianceOrder]);
+verifyEqual(testCase, viewer.SampleCount, 12);
+verifyEqual(testCase, viewer.CovarianceUpdateCount, 5);
+verifyEqual(testCase, viewer.UpdateCount, 5);
+clear cleanup;
+end
+
 function testCancellerFinalizeIsIdempotent(testCase)
 config = defaultLteSenseConfig();
 canceller = ltecancel.ArKalmanCanceller(config.Cancellation);
@@ -107,34 +217,22 @@ verifyEmpty(testCase, first.Message.Artifacts);
 verifyTrue(testCase, canceller.Finalized);
 end
 
-function testFigureManagerOwnsAndRemembersClosedFigure(testCase)
+function testViewerBaseSharesWindowReusesAxesAndStopsOnClose(testCase)
 config = defaultLteSenseConfig();
 config.Display.FigureVisible = 'off';
-manager = ltevisual.FigureManager(config.Display);
-cleanup = onCleanup(@() manager.closeAll());
-first = manager.getOrCreate('unit-test', 'Unit Test Figure');
-verifyTrue(testCase, isgraphics(first));
-verifyEqual(testCase, manager.getOrCreate( ...
-    'unit-test', 'Ignored Name'), first);
-close(first);
-verifyTrue(testCase, manager.wasClosed('unit-test'));
-verifyEmpty(testCase, manager.getOrCreate( ...
-    'unit-test', 'Must Not Reopen'));
-manager.forget('unit-test');
-second = manager.getOrCreate('unit-test', 'Reopened Figure');
-verifyTrue(testCase, isgraphics(second));
-clear cleanup;
-end
-
-function testViewersShareWindowAndReuseAxes(testCase)
-config = defaultLteSenseConfig();
-config.Display.FigureVisible = 'off';
-manager = ltevisual.FigureManager(config.Display);
-cleanup = onCleanup(@() manager.closeAll());
-viewAxes = manager.createViews(config.Display.Views);
-rdViewer = lterd.Viewer(config.Display, viewAxes.RangeDoppler);
+monitorFigure = figure('Visible', config.Display.FigureVisible);
+cleanup = onCleanup(@() closeIfOpen(monitorFigure));
+monitorLayout = tiledlayout(monitorFigure, 1, 3);
+rangeDopplerAxes = struct( ...
+    'Main', nexttile(monitorLayout, 1));
+arAxesGroup = struct( ...
+    'Spectrum', nexttile(monitorLayout, 2), ...
+    'PoleMap', nexttile(monitorLayout, 3));
+rdViewer = lterd.Viewer(config.Display, rangeDopplerAxes);
 arViewer = ltecancel.ArSpectrumViewer( ...
-    config.Display, viewAxes.ArSpectrum);
+    config.Display, arAxesGroup);
+verifyTrue(testCase, isa(rdViewer, 'ltevisual.ViewerBase'));
+verifyTrue(testCase, isa(arViewer, 'ltevisual.ViewerBase'));
 
 rdPacket = struct( ...
     'Type', 'range-doppler', ...
@@ -150,7 +248,9 @@ arArtifact = struct( ...
     'Data', struct( ...
         'FrequencyHz', [-100, 0, 100], ...
         'SpectrumDb', [-20, 0, -20], ...
-        'RootHz', [-20; 25]), ...
+        'RootHz', [-20; 25], ...
+        'FrequencyAxis', 'asinh', ...
+        'FrequencyLinearScaleHz', 1e-2), ...
     'Meta', struct());
 
 rdMessage = ltepipe.Message.fromPacket(rdPacket);
@@ -160,26 +260,46 @@ rdResult = rdViewer.process(rdMessage);
 arResult = arViewer.process(arMessage);
 verifyEqual(testCase, rdResult.Message, rdMessage);
 verifyEqual(testCase, arResult.Message, arMessage);
-rdAxes = rdViewer.AxesHandle;
-arAxes = arViewer.AxesHandle;
+rdAxes = rdViewer.Axes.Main;
+arSpectrumAxes = arViewer.Axes.Spectrum;
+arPoleAxes = arViewer.Axes.PoleMap;
 verifyTrue(testCase, isgraphics(rdAxes));
-verifyTrue(testCase, isgraphics(arAxes));
-verifyNotEqual(testCase, rdAxes, arAxes);
+verifyTrue(testCase, isgraphics(arSpectrumAxes));
+verifyTrue(testCase, isgraphics(arPoleAxes));
+verifyNotEqual(testCase, rdAxes, arSpectrumAxes);
 verifyEqual(testCase, ancestor(rdAxes, 'figure'), ...
-    ancestor(arAxes, 'figure'));
-verifyEqual(testCase, manager.getStatus().Keys, {'live-monitor'});
+    ancestor(arSpectrumAxes, 'figure'));
 
 rdViewer.process(rdMessage);
 arViewer.process(arMessage);
-verifyEqual(testCase, rdViewer.AxesHandle, rdAxes);
-verifyEqual(testCase, arViewer.AxesHandle, arAxes);
+verifyEqual(testCase, rdViewer.Axes.Main, rdAxes);
+verifyEqual(testCase, arViewer.Axes.Spectrum, arSpectrumAxes);
+verifyEqual(testCase, arViewer.Axes.PoleMap, arPoleAxes);
 verifyEqual(testCase, rdViewer.UpdateCount, 2);
 verifyEqual(testCase, arViewer.UpdateCount, 2);
 
-close(ancestor(rdAxes, 'figure'));
+delete(arPoleAxes);
+arStopResult = arViewer.process(ltepipe.Message.none());
+verifyEqual(testCase, arStopResult.Directive, 'stop');
+rdContinueResult = rdViewer.process(ltepipe.Message.none());
+verifyEqual(testCase, rdContinueResult.Directive, 'continue');
+
+close(monitorFigure);
 stopResult = rdViewer.process(ltepipe.Message.none());
 verifyEqual(testCase, stopResult.Directive, 'stop');
 clear cleanup;
+end
+
+function testDisabledViewerWithoutAxesPassesMessagesThrough(testCase)
+config = defaultLteSenseConfig();
+config.Display.Enabled = false;
+viewer = lterd.Viewer( ...
+    config.Display, struct('Main', gobjects(0)));
+message = ltepipe.Message.none();
+result = viewer.process(message);
+verifyEqual(testCase, result.Message, message);
+verifyEqual(testCase, result.Directive, 'continue');
+verifyEqual(testCase, viewer.getStatus().State, 'disabled');
 end
 
 function testPipelineHandlesResetStopAndStatusGenerically(testCase)
@@ -289,4 +409,10 @@ end
 function packet = makeTestPacket(epoch)
 packet = struct('Type', 'test', 'Data', struct('Value', 1), ...
     'Meta', struct('Epoch', epoch), 'Quality', struct());
+end
+
+function closeIfOpen(figureHandle)
+if isgraphics(figureHandle, 'figure')
+    close(figureHandle);
+end
 end
