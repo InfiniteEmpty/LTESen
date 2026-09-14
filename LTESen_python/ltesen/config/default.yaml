@@ -1,0 +1,101 @@
+# Default configuration for the Python LTE sensing pipeline.
+# Names use Python-style snake_case. Values mirror
+# LTE_record_process/defaultLteSenseConfig.m where the phase-1 schema applies.
+
+acquisition:
+  head_start_sample: 3072000
+  search_duration_seconds: 0.05
+  initial_ndlrb: 6
+  max_cell_count: 2
+  sss_detection: post_fft
+  frame_timing:
+    pss: "on"
+    sss: "on"
+    cellrs: "on"
+    cellrs_search_radius_samples: 0
+  channel_estimator:
+    pilot_average: UserDefined
+    freq_window: 13
+    time_window: 9
+    interp_type: linear
+
+tracking:
+  cp_fraction: 0.55
+  maximum_tx_ports: 2
+  receive_antenna_indices: [1]
+  cfo_cp_guard_samples: 20
+  cfo_cp_start_sample: 10
+  static_filter_order: 4
+  static_filter_cutoff: 0.006135923151542565
+  static_update_alpha: 0.05
+
+sync:
+  enable_monitoring: true
+  check_interval_frames: 10
+  suspect_threshold: 0.20
+  lost_threshold: 0.10
+  consecutive_failures: 3
+
+cancellation:
+  warmup_policy: bypass
+  ar_order: 5
+  warmup_frames: 40
+  sketch_size: 32
+  correlation_forgetting: 0.98
+  correlation_update_period: 1
+  root_update_period: 8
+  diagonal_loading: 0.0001
+  minimum_yule_walker_rcond: 0.00001
+  kalman_process_noise_ratio: 0.001
+  kalman_measurement_forgetting: 0.98
+  kalman_initial_covariance_ratio: 1
+  kalman_minimum_variance_ratio: 0.0001
+  kalman_maximum_variance_ratio: 10
+  kalman_posterior_cancellation_fraction: 0
+  coherence_low: 0.10
+  coherence_high: 0.60
+  coherence_forgetting: 0.90
+  maximum_cancellation: 0.92
+  prediction_power_limit: 2.0
+  frame_period_seconds: 0.01
+  spectrum_update_period_frames: 10
+  spectrum_linear_scale_hz: 0.01
+  spectrum_grid_size: 4097
+
+range_doppler:
+  window_frames: 10
+  hop_frames: 10
+  group: g1
+  receive_antenna: 1
+  transmit_antenna: 1
+  # The receiver fills this from SigMF/legacy recording metadata when null.
+  center_frequency_hz: null
+  crs_spacing: 6
+  slow_time_sample_period_seconds: 0.0005
+  speed_of_light_meters_per_second: 299792458.0
+  noise_floor_quantile: 0.10
+  display_below_noise_db: 10
+  display_above_noise_db: 40
+  require_cancellation_ready: false
+
+music:
+  data_field: dynamic_g1
+  receive_antenna: 1
+  transmit_antenna: 1
+  sample_interval_frames: 10
+  covariance_order: 40
+  signal_count: 5
+  correlation_forgetting: 0.98
+  diagonal_loading: 0.000001
+  frame_period_seconds: 0.01
+  frequency_limit_hz: 1.5
+  spectrum_grid_size: 2001
+
+display:
+  enabled: true
+  figure_visible: true
+  colormap: jet
+
+execution:
+  maximum_iterations: null
+  verbose: true
