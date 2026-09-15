@@ -1,9 +1,12 @@
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
 from ltesen.ltesync import SyncSupervisor
 from ltesen.ltetracking import CsiTracker
+from ltesen.ltetracking import csi_tracker as csi_tracker_module
+from ltesen.ltetracking.csi_tracker import _butter_lowpass
 
 
 class CsiTrackerTests(unittest.TestCase):
@@ -39,6 +42,39 @@ class CsiTrackerTests(unittest.TestCase):
                 np.arange(12)[:, None],
                 np.arange(12)[:, None],
             )
+
+    def test_frame_correction_batches_peak_search_and_updates_once(self) -> None:
+        tracker = CsiTracker({"static_filter_order": 0}, self._context())
+        csi = np.full((12, 20, 1, 1), 2.0 + 1.0j, dtype=np.complex64)
+        indices = np.arange(12, dtype=np.int64)[:, None]
+
+        with patch(
+            "ltesen.ltetracking.csi_tracker._estimate_phase_slope_fft",
+            wraps=csi_tracker_module._estimate_phase_slope_fft,
+        ) as estimator:
+            data, quality = tracker.correct_frame(csi, csi, indices, indices)
+
+        self.assertEqual(estimator.call_count, 1)
+        self.assertEqual(data["g1"].shape, (12, 20, 1, 1))
+        self.assertEqual(data["dynamic_g2"].shape, (12, 20, 1, 1))
+        self.assertEqual(quality["static_update_samples"], 20)
+        self.assertFalse(quality["static_estimate_ready"])
+
+        _, second_quality = tracker.correct_frame(csi, csi, indices, indices)
+        self.assertTrue(second_quality["static_estimate_ready"])
+
+    def test_default_filter_is_stable_at_low_cutoff(self) -> None:
+        numerator, denominator = _butter_lowpass(4, np.pi / 512.0)
+        poles = np.roots(denominator)
+        self.assertLess(float(np.max(np.abs(poles))), 1.0)
+
+        tracker = CsiTracker({}, self._context())
+        csi = np.full((12, 2, 1, 1), 2.0 + 1.0j, dtype=np.complex64)
+        indices = np.arange(12, dtype=np.int64)[:, None]
+        for _ in range(200):
+            data, quality = tracker.correct(csi, csi, indices, indices)
+        self.assertTrue(np.all(np.isfinite(data["g1"])))
+        self.assertTrue(np.isfinite(quality["sample_shift"]))
 
 
 class SyncSupervisorTests(unittest.TestCase):

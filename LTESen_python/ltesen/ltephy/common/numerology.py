@@ -1,4 +1,4 @@
-"""LTE OFDM numerology corresponding to MATLAB ``lteOFDMInfo``."""
+"""LTE numerology and cyclic-prefix geometry."""
 
 from __future__ import annotations
 
@@ -25,18 +25,28 @@ _DEFAULT_WINDOWING = {
     75: 8,
     100: 8,
 }
-_NORMAL_CP_2048 = (160, 144, 144, 144, 144, 144, 144, 160, 144, 144, 144, 144, 144, 144)
+_NORMAL_CP_2048 = (
+    160,
+    144,
+    144,
+    144,
+    144,
+    144,
+    144,
+    160,
+    144,
+    144,
+    144,
+    144,
+    144,
+    144,
+)
 _EXTENDED_CP_2048 = (512,) * 12
 
 
 @dataclass(frozen=True)
 class LteOfdmInfo:
-    """OFDM parameters returned by :func:`lte_ofdm_info`.
-
-    Python-facing fields use snake_case.  ``as_dict`` also exposes the
-    MATLAB-compatible names because lock metadata is exchanged at the
-    receiver boundary during the migration.
-    """
+    """LTE numerology corresponding to MATLAB ``lteOFDMInfo``."""
 
     ndlrb: int
     cyclic_prefix: str
@@ -64,7 +74,8 @@ class LteOfdmInfo:
         """Samples from a subframe start to the PSS symbol start."""
 
         return sum(
-            self.nfft + cp for cp in self.cyclic_prefix_lengths[: self.pss_symbol_index]
+            self.nfft + cp
+            for cp in self.cyclic_prefix_lengths[: self.pss_symbol_index]
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -88,13 +99,7 @@ def lte_ofdm_info(
     enb: Mapping[str, Any] | Any,
     nfft: int | None = None,
 ) -> LteOfdmInfo:
-    """Return LTE OFDM information for an eNodeB-style configuration.
-
-    The default FFT-size table and CP scaling follow the local MATLAB
-    ``MATLAB_LIB_REFER.md`` reference.  Explicit ``nfft`` values are allowed
-    when they are large enough for the active subcarriers and produce integer
-    CP lengths, matching the documented MATLAB validation.
-    """
+    """Return LTE OFDM information for an eNodeB-style configuration."""
 
     ndlrb = _integer_field(enb, "ndlrb", "NDLRB")
     if ndlrb not in _DEFAULT_NFFT:
@@ -120,14 +125,21 @@ def lte_ofdm_info(
     cp_scale = selected_nfft / 2048.0
     scaled_cp = tuple(cp * cp_scale for cp in base_cp)
     rounded_cp = tuple(int(round(cp)) for cp in scaled_cp)
-    if any(not np.isclose(value, rounded) for value, rounded in zip(scaled_cp, rounded_cp)):
+    if any(
+        not np.isclose(value, rounded)
+        for value, rounded in zip(scaled_cp, rounded_cp)
+    ):
         raise ValueError("nfft produces non-integer cyclic-prefix lengths")
 
     explicit_windowing = _field(enb, "windowing", "Windowing", default=None)
     if explicit_windowing is None:
-        windowing = int(round(_DEFAULT_WINDOWING[ndlrb] * selected_nfft / default_nfft))
+        windowing = int(
+            round(_DEFAULT_WINDOWING[ndlrb] * selected_nfft / default_nfft)
+        )
     else:
-        windowing = _positive_integer(explicit_windowing, "windowing", allow_zero=True)
+        windowing = _positive_integer(
+            explicit_windowing, "windowing", allow_zero=True
+        )
 
     return LteOfdmInfo(
         ndlrb=ndlrb,
@@ -139,7 +151,11 @@ def lte_ofdm_info(
     )
 
 
-def _field(value: Mapping[str, Any] | Any, *names: str, default: Any = ...,) -> Any:
+def _field(
+    value: Mapping[str, Any] | Any,
+    *names: str,
+    default: Any = ...,
+) -> Any:
     if isinstance(value, Mapping):
         for name in names:
             if name in value:
@@ -150,7 +166,7 @@ def _field(value: Mapping[str, Any] | Any, *names: str, default: Any = ...,) -> 
                 return getattr(value, name)
     if default is not ...:
         return default
-    raise ValueError(f"Missing LTE field; expected one of {names}")
+    raise ValueError(f"Missing OFDM field; expected one of {names}")
 
 
 def _integer_field(value: Mapping[str, Any] | Any, *names: str) -> int:

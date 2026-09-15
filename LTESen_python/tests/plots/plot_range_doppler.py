@@ -19,7 +19,6 @@ import matplotlib
 matplotlib.use("Agg")
 
 from ltesen.config import load_config
-from ltesen.ltebuffer import CsiFrameAssembler
 from ltesen.lteio import open_recording
 from ltesen.ltepipe import Pipeline
 from ltesen.lterd import RangeDopplerProcessor
@@ -49,14 +48,12 @@ def plot_recording(
     )
     recording = open_recording(root, record_name)
     receiver = Receiver(recording, config)
-    assembler = CsiFrameAssembler()
     processor = RangeDopplerProcessor(config["range_doppler"])
     viewer = RangeDopplerViewer(
         {**config["display"], "enabled": True, "figure_visible": False}
     )
     pipeline = Pipeline(config["execution"])
     pipeline.register(receiver)
-    pipeline.register(assembler)
     pipeline.register(processor)
     pipeline.register(viewer)
     pipeline.run()

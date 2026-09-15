@@ -1,4 +1,4 @@
-"""Small physical-PBCH helpers shared by the later BCH decoder."""
+"""LTE PBCH scrambling, modulation, and resource-element mapping."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from .cell_rs import _gold_sequence
+from ltesen.ltephy.common import lte_gold_sequence
 
 
 def lte_pbch_prbs(
@@ -37,7 +37,7 @@ def lte_pbch_prbs(
             raise ValueError("length must be an integer or a (start, count) pair")
         start = _nonnegative_integer(values[0], "start")
         count = _nonnegative_integer(values[1], "count")
-    sequence = _gold_sequence(cell_id, start + count)[start:]
+    sequence = lte_gold_sequence(cell_id, start + count)[start:]
     mode = str(mapping).lower()
     if mode == "binary":
         return sequence.astype(np.uint8)
@@ -82,7 +82,7 @@ def lte_pbch(
     ) / np.sqrt(2.0)
 
     ports = _bounded_integer(
-        _field_default(enb, "cell_ref_p", "CellRefP", default=1), "CellRefP", 1, 4
+        _field(enb, "cell_ref_p", "CellRefP", default=1), "CellRefP", 1, 4
     )
     if ports not in {1, 2, 4}:
         raise ValueError("CellRefP must be one of 1, 2, or 4")
@@ -117,6 +117,64 @@ def lte_pbch(
     return output
 
 
+def lte_pbch_indices(
+    enb: Mapping[str, Any] | Any,
+    options: str | Sequence[str] | None = None,
+) -> np.ndarray:
+    """Return PBCH resource locations for a one-subframe resource grid."""
+
+    rb_count = _bounded_integer(_field(enb, "ndlrb", "NDLRB"), "NDLRB", 6, 110)
+    cell_id = _bounded_integer(
+        _field(enb, "ncellid", "NCellID"), "NCellID", 0, 503
+    )
+    ports = _bounded_integer(
+        _field(enb, "cell_ref_p", "CellRefP", default=1), "CellRefP", 1, 4
+    )
+    if ports not in {1, 2, 4}:
+        raise ValueError("CellRefP must be one of 1, 2, or 4")
+    n_subframe = _bounded_integer(
+        _field(enb, "nsubframe", "NSubframe", default=0), "NSubframe", 0, 9
+    )
+    style, base = _parse_index_options(options)
+    n_symbols = 14 if _prefix(enb) == "normal" else 12
+    if n_subframe != 0:
+        shape = (0, 3) if style == "sub" else (0, ports)
+        return np.empty(shape, dtype=np.uint32)
+
+    first_symbol = 7 if n_symbols == 14 else 6
+    center_start = 6 * (rb_count - 6)
+    v_shift = cell_id % 6
+    rows: list[tuple[int, int, int]] = []
+    for port in range(ports):
+        for symbol_offset in range(4):
+            symbol = first_symbol + symbol_offset
+            reserve = symbol_offset in (
+                {0, 1} if n_symbols == 14 else {0, 1, 3}
+            )
+            for local_subcarrier in range(72):
+                if reserve and (local_subcarrier - v_shift) % 3 == 0:
+                    continue
+                rows.append((center_start + local_subcarrier, symbol, port))
+
+    subs = np.asarray(rows, dtype=np.int64)
+    if base == 1:
+        subs = subs + 1
+    if style == "sub":
+        return subs.astype(np.uint32)
+
+    per_port = subs.reshape(ports, -1, 3)
+    linear = np.empty((per_port.shape[1], ports), dtype=np.int64)
+    for port in range(ports):
+        current = per_port[port]
+        linear[:, port] = (
+            (current[:, 0] - base)
+            + (rb_count * 12) * (current[:, 1] - base)
+            + (rb_count * 12) * n_symbols * port
+            + base
+        )
+    return linear.astype(np.uint32)
+
+
 def _nonnegative_integer(value: Any, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, (Integral, Real)):
         raise ValueError(f"{name} must be a non-negative integer")
@@ -125,29 +183,10 @@ def _nonnegative_integer(value: Any, name: str) -> int:
     return int(value)
 
 
-def _field(value: Mapping[str, Any] | Any, *names: str) -> Any:
-    if isinstance(value, Mapping):
-        for name in names:
-            if name in value:
-                return value[name]
-    else:
-        for name in names:
-            if hasattr(value, name):
-                return getattr(value, name)
-    raise ValueError(f"Missing LTE field; expected one of {names}")
-
-
-def _prefix(value: Mapping[str, Any] | Any) -> str:
-    prefix = str(_field_default(value, "cyclic_prefix", "CyclicPrefix", default="Normal")).lower()
-    if prefix not in {"normal", "extended"}:
-        raise ValueError("CyclicPrefix must be 'Normal' or 'Extended'")
-    return prefix
-
-
-def _field_default(
+def _field(
     value: Mapping[str, Any] | Any,
     *names: str,
-    default: Any,
+    default: Any = ...,
 ) -> Any:
     if isinstance(value, Mapping):
         for name in names:
@@ -157,7 +196,18 @@ def _field_default(
         for name in names:
             if hasattr(value, name):
                 return getattr(value, name)
-    return default
+    if default is not ...:
+        return default
+    raise ValueError(f"Missing LTE field; expected one of {names}")
+
+
+def _prefix(value: Mapping[str, Any] | Any) -> str:
+    prefix = str(
+        _field(value, "cyclic_prefix", "CyclicPrefix", default="Normal")
+    ).lower()
+    if prefix not in {"normal", "extended"}:
+        raise ValueError("CyclicPrefix must be 'Normal' or 'Extended'")
+    return prefix
 
 
 def _normalise_bits(value: Any) -> np.ndarray:
@@ -176,12 +226,28 @@ def _bounded_integer(value: Any, name: str, lower: int, upper: int) -> int:
     return integer
 
 
-def _nonnegative_integer(value: Any, name: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, (Integral, Real)):
-        raise ValueError(f"{name} must be a non-negative integer")
-    if not np.isfinite(value) or int(value) != value or int(value) < 0:
-        raise ValueError(f"{name} must be a non-negative integer")
-    return int(value)
+def _parse_index_options(
+    options: str | Sequence[str] | None,
+) -> tuple[str, int]:
+    if options is None:
+        return "sub", 0
+    tokens = (
+        options.lower().split()
+        if isinstance(options, str)
+        else [str(item).lower() for item in options]
+    )
+    style = "sub"
+    base = 0
+    for token in tokens:
+        if token in {"sub", "ind"}:
+            style = token
+        elif token == "0based":
+            base = 0
+        elif token == "1based":
+            base = 1
+        else:
+            raise ValueError(f"unsupported PBCH index option: {token}")
+    return style, base
 
 
-__all__ = ["lte_pbch", "lte_pbch_prbs"]
+__all__ = ["lte_pbch", "lte_pbch_indices", "lte_pbch_prbs"]

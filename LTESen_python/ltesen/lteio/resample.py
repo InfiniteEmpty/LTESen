@@ -67,7 +67,7 @@ def resample_waveform(
             source_positions = np.arange(target_count, dtype=float) * input_rate / output_rate
             source_positions = np.minimum(source_positions, values.shape[0] - 1)
             source_indices = np.arange(values.shape[0], dtype=float)
-            result = np.empty((target_count, values.shape[1]), dtype=np.complex128)
+            result = np.empty((target_count, values.shape[1]), dtype=np.complex64)
             for antenna in range(values.shape[1]):
                 column = values[:, antenna]
                 result[:, antenna] = np.interp(source_positions, source_indices, column.real)
@@ -85,7 +85,7 @@ def _anti_alias_filter(values: np.ndarray, step: int) -> np.ndarray:
     """Apply a linear-phase low-pass FIR suitable for decimation by ``step``."""
 
     if step <= 1:
-        return values.astype(np.complex128, copy=False)
+        return values.astype(np.complex64, copy=False)
     # The passband ends below the new Nyquist frequency.  A Hamming-windowed
     # sinc gives useful stop-band rejection without adding SciPy to the core
     # package.  The explicit edge padding avoids zero-filled transients when
@@ -98,7 +98,7 @@ def _anti_alias_filter(values: np.ndarray, step: int) -> np.ndarray:
     coefficients /= np.sum(coefficients)
 
     padded = np.pad(values, ((half_width, half_width), (0, 0)), mode="edge")
-    filtered = np.empty_like(padded, dtype=np.complex128)
+    filtered = np.empty_like(padded, dtype=np.complex64)
     for antenna in range(values.shape[1]):
         filtered[:, antenna] = np.convolve(
             padded[:, antenna], coefficients, mode="same"
@@ -108,8 +108,8 @@ def _anti_alias_filter(values: np.ndarray, step: int) -> np.ndarray:
 
 def _resize_exact(values: np.ndarray, target_count: int) -> np.ndarray:
     if values.shape[0] >= target_count:
-        return values[:target_count, :].astype(np.complex128, copy=False)
-    result = np.empty((target_count, values.shape[1]), dtype=np.complex128)
+        return values[:target_count, :].astype(np.complex64, copy=False)
+    result = np.empty((target_count, values.shape[1]), dtype=np.complex64)
     result[: values.shape[0], :] = values
     result[values.shape[0] :, :] = values[-1, :]
     return result

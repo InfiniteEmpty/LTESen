@@ -11,7 +11,7 @@ from ltesen.ltephy import (
     lte_dl_frame_offset,
     lte_ofdm_info,
 )
-from ltesen.ltephy.cell_search import _pss_sequence, _sss_sequences
+from ltesen.ltephy.sync.cell_search import _pss_sequence, _sss_sequences
 
 
 def make_reference_subframe(ndlrb: int, cell_id: int) -> tuple[np.ndarray, object]:
@@ -197,6 +197,8 @@ class LtePhyTests(unittest.TestCase):
                     np.testing.assert_allclose(
                         g1[index, group, 0, port],
                         expected[(port, int(subcarrier), int(symbol))],
+                        atol=3e-6,
+                        rtol=3e-6,
                     )
             self.assertTrue(np.all(index_g1[:, port] >= 0))
             self.assertTrue(np.all(index_g2[:, port] >= 0))

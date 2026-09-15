@@ -34,6 +34,7 @@ class Timebase:
         enb = _field(lock, "enb", "Enb", default={})
         self.frame_number = float(_field(enb, "n_frame", "NFrame", default=0))
         self.subframe_number = 0
+        self.last_timing_correction_lte_samples = 0
 
     def can_read(self, sample_count: int | float) -> bool:
         start_sample_0 = _round_positive(self.current_raw_start_exact)
@@ -62,16 +63,36 @@ class Timebase:
         }
 
     def advance(self, timing_delta_lte_samples: int | float = 0) -> None:
-        delta = float(timing_delta_lte_samples)
-        if not math.isfinite(delta):
-            raise ValueError("timing_delta_lte_samples must be finite")
-        timing_delta_raw_samples = delta * self.raw_sample_rate_hz / self.lte_sample_rate_hz
-        self.current_raw_start_exact += self.raw_samples_per_subframe + timing_delta_raw_samples
+        delta = self._validate_timing_delta(timing_delta_lte_samples)
+        self.current_raw_start_exact += (
+            self.raw_samples_per_subframe + self._to_raw_samples(delta)
+        )
         self.sequence += 1
         self.subframe_number += 1
         if self.subframe_number == 10:
             self.subframe_number = 0
             self.frame_number = (self.frame_number + 1) % 1024
+
+    def apply_timing_correction(self, timing_delta_lte_samples: int | float = 0) -> None:
+        """Adjust the next read position without advancing sequence time.
+
+        The receiver uses this at an LTE-frame boundary.  Phase/SFO tracking
+        remains continuous for every subframe, while the discrete integer
+        sample correction is applied only once to the start of the next frame.
+        """
+
+        delta = self._validate_timing_delta(timing_delta_lte_samples)
+        self.current_raw_start_exact += self._to_raw_samples(delta)
+        self.last_timing_correction_lte_samples = int(round(delta))
+
+    def _validate_timing_delta(self, value: int | float) -> float:
+        delta = float(value)
+        if not math.isfinite(delta):
+            raise ValueError("timing_delta_lte_samples must be finite")
+        return delta
+
+    def _to_raw_samples(self, delta_lte_samples: float) -> float:
+        return delta_lte_samples * self.raw_sample_rate_hz / self.lte_sample_rate_hz
 
 
 def _field(

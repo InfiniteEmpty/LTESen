@@ -9,20 +9,21 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from ..lteio import IQDataFile, processing_sample_rate, resample_waveform
-from ..ltephy import (
+from ltesen.lteio import IQDataFile, processing_sample_rate, resample_waveform
+from ltesen.ltephy.ch_estimation import lte_dl_channel_estimate
+from ltesen.ltephy.common import (
+    lte_extract_resources,
+    lte_ofdm_info,
+    lte_resource_grid_size,
+)
+from ltesen.ltephy.ofdm import lte_ofdm_demodulate
+from ltesen.ltephy.phch import lte_mib, lte_pbch_decode, lte_pbch_indices
+from ltesen.ltephy.sync import (
     CellSearchError,
     cell_search,
-    lte_dl_channel_estimate,
     lte_dl_frame_offset,
-    lte_extract_resources,
     lte_frequency_correct,
     lte_frequency_offset,
-    lte_mib,
-    lte_ofdm_demodulate,
-    lte_ofdm_info,
-    lte_pbch_decode,
-    lte_pbch_indices,
 )
 
 
@@ -273,8 +274,6 @@ class Acquirer:
 
     @staticmethod
     def _grid_size(enb: Mapping[str, Any]) -> tuple[int, int, int]:
-        from ..ltephy import lte_resource_grid_size
-
         return lte_resource_grid_size(enb)
 
 

@@ -16,7 +16,7 @@ class FrequencyTests(unittest.TestCase):
             {"sampling_rate_hz": sample_rate}, waveform, offset_hz
         )
 
-        np.testing.assert_allclose(corrected, np.ones_like(waveform), atol=1e-12)
+        np.testing.assert_allclose(corrected, np.ones_like(waveform), atol=3e-6)
         self.assertEqual(corrected.ndim, 1)
 
     def test_frequency_offset_estimates_cp_phase_rotation(self):

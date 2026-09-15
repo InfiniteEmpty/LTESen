@@ -8,7 +8,7 @@ from typing import Any, Mapping
 import numpy as np
 
 from .cell_rs import lte_cell_rs, lte_cell_rs_indices
-from .resource_grid import lte_resource_grid_size
+from ltesen.ltephy.common import lte_resource_grid_size
 
 
 class CrsReferenceCache:
@@ -85,7 +85,7 @@ def lte_crs_csi(
     different CSI grouping.
     """
 
-    grid = np.asarray(rxgrid, dtype=np.complex128)
+    grid = np.asarray(rxgrid, dtype=np.complex64)
     if grid.ndim == 2:
         grid = grid[:, :, None]
     if grid.ndim != 3 or not np.all(np.isfinite(grid)):
@@ -103,7 +103,7 @@ def lte_crs_csi(
         )
 
     n_crs = 2 * (expected_sc // 12)
-    g1 = np.empty((n_crs, 2, n_rx, n_ports), dtype=np.complex128)
+    g1 = np.empty((n_crs, 2, n_rx, n_ports), dtype=np.complex64)
     g2 = np.empty_like(g1)
     index_g1 = np.empty((n_crs, n_ports), dtype=np.int64)
     index_g2 = np.empty_like(index_g1)

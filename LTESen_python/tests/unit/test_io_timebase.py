@@ -141,6 +141,14 @@ class IoAndTimebaseTests(unittest.TestCase):
         self.assertEqual(second["sequence"], 1)
         self.assertTrue(timebase.can_read(62438))
 
+        before_frame_correction = timebase.current_raw_start_exact
+        timebase.apply_timing_correction(-1)
+        self.assertEqual(
+            timebase.current_raw_start_exact,
+            before_frame_correction - 2,
+        )
+        self.assertEqual(timebase.last_timing_correction_lte_samples, -1)
+
         for _ in range(9):
             timebase.advance()
         self.assertEqual(timebase.subframe_number, 0)

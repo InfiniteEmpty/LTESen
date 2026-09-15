@@ -1,4 +1,4 @@
-"""Small LTE FEC primitives used by the broadcast channel.
+"""Small LTE FEC primitives used by the physical-channel layer.
 
 The implementation follows the LTE BCH processing defined by TS 36.212 and
 the corresponding srsRAN reference path, but uses ordinary NumPy/Python data

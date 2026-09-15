@@ -272,23 +272,62 @@ flowchart LR
 
 ## 8. 控制平面
 
-数据图保持无环；控制命令可以按节点名发送到任意节点，包括上游：
+采用**集中传递、分离决策**的控制模型：任何模块都不能直接调用、持有或修改
+另一个模块。模块只能把控制面信息提交给 Pipeline 的控制总线，再由 Pipeline
+按照声明的订阅、目标和作用域统一投递。
+
+Pipeline 是控制面的传输与执行内核，不是 LTE 领域策略中心。同步是否需要
+重新捕获、载波是否应降级、融合模式是否切换等决策，由显式 Supervisor 节点
+负责；Pipeline 只处理路由、排序、去重、确认和通用生命周期动作。
 
 ```mermaid
 flowchart LR
-    Receiver --> CSI --> Monitor
-    Monitor -. resync command .-> Receiver
+    Monitor[Sync Monitor] -->|ControlEvent: SyncLost| Bus[Pipeline Control Bus]
+    Bus --> Supervisor[Acquisition Supervisor]
+    Supervisor -->|Command: Reacquire cc0| Bus
+    Bus --> Receiver[cc0 Receiver]
+    Bus -->|ResetEvent| Descendants[cc0 下游节点]
 ```
 
-建议定义强类型控制对象：
+数据图保持无环。控制总线可以把命令发送给任意节点，包括数据图中的上游，
+但这种控制路由不会形成数据平面的环。
+
+### 8.1 控制对象
+
+控制面区分“事实”“动作”和“执行结果”：
+
+- `ControlEvent`：模块观察到的事实，例如 `sync_lost`、`quality_degraded`；
+- `Command`：Supervisor 或外部控制端决定执行的动作；
+- `ControlAck`：目标模块对命令的接受、拒绝或完成确认；
+- `ResetEvent`：由 Pipeline 根据通用连续性规则传播的重置通知。
+
+建议使用强类型不可变对象：
 
 ```python
 @dataclass(frozen=True)
-class Command:
-    target: str
-    name: str
+class ControlEvent:
+    event_id: str
+    source: str
+    kind: str
+    stream: StreamKey | None
+    epoch: int | None
     payload: Mapping[str, Any]
+
+@dataclass(frozen=True)
+class Command:
     command_id: str
+    target: str
+    kind: str
+    stream: StreamKey | None
+    payload: Mapping[str, Any]
+    caused_by: str | None
+
+@dataclass(frozen=True)
+class ControlAck:
+    command_id: str
+    source: str
+    status: Literal["accepted", "completed", "rejected", "failed"]
+    reason: str = ""
 
 @dataclass(frozen=True)
 class ResetEvent:
@@ -300,10 +339,53 @@ class ResetEvent:
     reason: str
 ```
 
-命令在两个节点处理调用之间由调度器分发，禁止在一个节点内部同步调用另一个
-节点，以避免重入和隐式依赖。
+每个控制对象都必须可记录和可序列化，以便离线回放控制过程。`event_id` 和
+`command_id` 用于去重、追踪因果关系并阻止事件循环。
 
-### 8.1 Reset 传播
+### 8.2 Supervisor 与 Pipeline 的边界
+
+Supervisor 是普通的控制策略节点。它订阅指定事件并产生 Command，例如：
+
+```text
+SyncMonitor --sync_lost--> AcquisitionSupervisor
+AcquisitionSupervisor --reacquire--> cc0_receiver
+```
+
+Pipeline 不应包含如下领域判断：
+
+```python
+if event.kind == "sync_lost":
+    receiver.reacquire()
+```
+
+它只执行通用流程：
+
+1. 接收并验证 ControlEvent；
+2. 按注册表把事件投递给订阅它的 Supervisor；
+3. 接收 Supervisor 返回的 Command；
+4. 验证目标节点、命令类型和 stream 作用域；
+5. 在安全调度点调用目标节点的 `handle_command()`；
+6. 收集 ControlAck，并记录事件到命令的因果链。
+
+`reacquire`、`change_fusion_mode` 等命令对 Pipeline 是不透明的，由目标节点
+验证和执行。`reset_stream`、`stop_graph`、EOS 和 watermark 属于 Pipeline
+可直接理解的通用执行语义。
+
+### 8.3 投递与隔离规则
+
+- 模块不得保存其他模块实例或调用其 `process/reset/handle_command`；
+- 模块不得借助 Runtime 中的可变对象绕过控制总线；
+- 控制事件不默认广播给全部模块，只投递给声明订阅者；
+- Command 必须具有明确 target，或使用 Pipeline 支持的通用 scope；
+- 命令在两次节点数据处理之间分发，禁止同步重入；
+- 同一 `command_id` 至多执行一次；重试使用同一 ID；
+- 被拒绝或失败的命令必须返回 Ack，不能静默忽略；
+- Supervisor 不能直接改变图拓扑，第一版也不支持运行时热重连。
+
+GUI、CLI 和自动监督器都使用同一控制入口。GUI 关闭窗口通常只取消数据订阅；
+只有用户明确执行“停止感知”时，GUI 才提交 `stop_graph` Command。
+
+### 8.4 Reset 传播
 
 重新捕获只重置受影响 stream 的后代，而不是清空整张图。执行器沿数据边遍历
 所有可达节点，每个节点对同一 `event_id` 只接收一次重置，避免菱形 DAG
@@ -312,7 +394,7 @@ class ResetEvent:
 多输入节点应按 stream 清除对应缓存；如果这使一个已形成的复合流失效，则
 它创建新的复合 epoch，并向自己的下游继续传播重置。
 
-### 8.2 Stop 范围
+### 8.5 Stop 范围
 
 停止事件必须声明范围：
 

@@ -19,9 +19,9 @@ class RangeDopplerProcessor(Module):
     The implementation follows ``lterd.Processor`` in the MATLAB project:
     Hamming windows are applied in frequency and slow time, followed by an
     IFFT over CRS subcarriers and an FFT over the slow-time samples.  The
-    processor accepts complete ``csi-frame`` packets, so the upstream
-    ``CsiFrameAssembler`` remains responsible for the ten LTE subframes in a
-    frame.
+    processor accepts complete ``csi-frame`` packets. The streaming receiver
+    builds those packets directly, so frame assembly is not a separate runtime
+    stage.
     """
 
     def __init__(

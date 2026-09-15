@@ -7,6 +7,8 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from ltesen.ltephy.common import lte_gold_sequence
+
 
 _NORMAL_CRS = {
     0: ((0, 0), (4, 3), (7, 0), (11, 3)),
@@ -106,27 +108,17 @@ def lte_cell_rs(
             # The CRS sequence is defined for the maximum downlink bandwidth
             # (110 RB).  A narrower configured carrier takes its centered
             # portion, rather than restarting the sequence at m=0.
-            sequence_bits = _gold_sequence(c_init, 4 * _MAX_DOWNLINK_RB)
+            sequence_bits = lte_gold_sequence(c_init, 4 * _MAX_DOWNLINK_RB)
             start = 2 * (_MAX_DOWNLINK_RB - rb_count)
             bits = sequence_bits[start : start + 4 * rb_count]
             generated.append(
-                ((1 - 2 * bits[0::2]) + 1j * (1 - 2 * bits[1::2])) / np.sqrt(2)
+                (
+                    (1 - 2 * bits[0::2])
+                    + np.complex64(1j) * (1 - 2 * bits[1::2])
+                ).astype(np.complex64)
+                / np.float32(np.sqrt(2))
             )
-    return np.concatenate(generated) if generated else np.empty(0, dtype=np.complex128)
-
-
-def _gold_sequence(c_init: int, length: int) -> np.ndarray:
-    total = 1600 + length
-    x1 = np.zeros(total + 31, dtype=np.int8)
-    x2 = np.zeros(total + 31, dtype=np.int8)
-    x1[0] = 1
-    x2[:31] = ((c_init >> np.arange(31)) & 1).astype(np.int8)
-    for index in range(total):
-        x1[index + 31] = (x1[index + 3] + x1[index]) & 1
-        x2[index + 31] = (
-            x2[index + 3] + x2[index + 2] + x2[index + 1] + x2[index]
-        ) & 1
-    return x1[1600 : 1600 + length] ^ x2[1600 : 1600 + length]
+    return np.concatenate(generated).astype(np.complex64, copy=False) if generated else np.empty(0, dtype=np.complex64)
 
 
 def _ports(enb: Mapping[str, Any] | Any, ports: int | Sequence[int] | None) -> tuple[int, ...]:

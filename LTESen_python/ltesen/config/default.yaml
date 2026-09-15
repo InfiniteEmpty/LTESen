@@ -25,6 +25,10 @@ tracking:
   receive_antenna_indices: [1]
   cfo_cp_guard_samples: 20
   cfo_cp_start_sample: 10
+  # Measure CP phase on every subframe, but update the applied CFO vector only
+  # after averaging 100 subframes (10 LTE frames) to follow slow oscillator drift.
+  cfo_refinement_enabled: true
+  cfo_refinement_interval_subframes: 100
   static_filter_order: 4
   static_filter_cutoff: 0.006135923151542565
   static_update_alpha: 0.05

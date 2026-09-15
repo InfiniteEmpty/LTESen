@@ -13,17 +13,38 @@ The current Python rewrite provides the reusable pipeline contract, recording
 readers, and the first waveform-domain helpers:
 
 - `ltesen.ltepipe`: messages, results, runtime context, modules, and pipeline
-- `ltesen.ltebuffer`: ten-subframe CSI frame assembly and frame windows
+- `ltesen.ltebuffer`: complete-CSI frame windows used by downstream processing
 - `ltesen.lteio`: SigMF/legacy IQ readers, format selection, sample-rate metadata, and a NumPy anti-aliasing sample-rate converter for integer LTE downsampling
 - `ltesen.ltesync`: raw/LTE sample-domain timebase, FDD PSS/SSS-to-PBCH acquisition lock, and synchronization-health supervision
-- `ltesen.ltephy`: LTE OFDM information, active-grid OFDM demodulation, PSS/SSS cell search, CFO helpers, known-cell frame timing, resource-grid sizing, CRS generation, PBCH indexing/resource extraction, BCH/PBCH coding and decoding, MIB bit-field parsing, PBCH scrambling, and the initial CRS channel estimator
-- `ltesen.ltetracking`: full-bin OFDM demodulation, phase-slope estimation, CFO refinement, phase/SFO CSI tracking, and the streaming CSI receiver source
+- `ltesen.ltephy`: stateless LTE PHY primitives grouped similarly to srsRAN into `common`, `sync`, `ch_estimation`, `fec`, and `phch`, with OFDM kept as one Python module
+- `ltesen.ltetracking`: stateful CFO refinement, CSI/SFO tracking, and the streaming frame-level CSI receiver source
 - `ltesen.lterd`: headless windowed 2-D FFT range-Doppler processing
-- `ltesen.config`: YAML configuration loading and validation
+- `ltesen.config`: generic YAML loading and recursive overrides; module-specific validation stays with each consumer
 
 The CSI packet array convention is `(subcarriers, time, receive_antennas,
 transmit_antennas)`. A subframe has two time samples per resource block
 column in the current data contract; a complete frame has twenty.
+
+## Package boundaries
+
+The LTE PHY layer is organized by protocol role rather than by one MATLAB
+function per file:
+
+```text
+ltesen/ltephy/
+  common/          numerology, Gold sequences, generic resource-grid helpers
+  ofdm.py          reusable plans, full-bin and active-grid FFT
+  sync/            PSS/SSS search, CFO primitives, frame timing
+  ch_estimation/   CRS symbols/indices, channel estimation, direct CSI
+  fec.py           CRC, convolutional coding, rate matching and decoding
+  phch/            BCH/PBCH, MIB, scrambling, and PBCH resource indices
+```
+
+`ltephy` contains stateless signal-processing primitives. `ltesync` owns
+acquisition and synchronization state, while `ltetracking` owns adaptive CFO
+/CSI state and the frame-level receiver orchestration. `ltebuffer` contains
+only downstream frame-window storage; the receiver itself emits complete
+`csi-frame` packets.
 
 ## uv environment
 
@@ -52,8 +73,8 @@ uv run --extra plot python tests/plots/plot_signal_segment.py
 
 Generated images are placed under `tests/outputs/` and are ignored by Git.
 
-To run the receiver, assemble CSI frames, calculate one windowed R-D map, and
-save it from the bundled recording:
+To run the receiver, calculate one windowed R-D map from complete CSI frames,
+and save it from the bundled recording:
 
 ```powershell
 uv run --extra plot python tests/plots/plot_range_doppler.py

@@ -2,35 +2,15 @@ from __future__ import annotations
 
 import math
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import numpy as np
 
 from ltesen.config import load_config
-from ltesen.ltebuffer import CsiFrameAssembler, FrameWindow
+from ltesen.ltebuffer import FrameWindow
 from ltesen.lteio import processing_sample_rate
 from ltesen.ltepipe import Message, Module, Packet, Pipeline, Result
-
-
-def make_subframe(epoch: int, sequence: int, subframe_number: int) -> Packet:
-    value = float(subframe_number)
-    return Packet(
-        type="csi-subframe",
-        data={
-            "g1": np.full((1, 2, 1, 1), value),
-            "g2": np.full((1, 2, 1, 1), value + 20),
-            "dynamic_g1": np.full((1, 2, 1, 1), value + 40),
-            "dynamic_g2": np.full((1, 2, 1, 1), value + 60),
-        },
-        meta={
-            "epoch": epoch,
-            "sequence": sequence,
-            "subframe_number": subframe_number,
-            "frame_number": sequence // 10,
-            "raw_start_sample_0": sequence * 100,
-            "raw_end_sample_0": (sequence + 1) * 100,
-        },
-        quality={},
-    )
 
 
 def make_frame(sequence: int, frame_index: int, receive_count: int = 2) -> Packet:
@@ -103,43 +83,24 @@ class PhaseOneTests(unittest.TestCase):
         self.assertEqual(config["acquisition"]["initial_ndlrb"], 6)
         self.assertIsNone(config["execution"]["maximum_iterations"])
 
+    def test_config_loader_does_not_validate_module_schema(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "custom.yaml"
+            path.write_text(
+                "custom_module:\n  threshold: -1\n",
+                encoding="utf-8",
+            )
+            config = load_config(
+                path,
+                overrides={"custom_module": {"enabled": True}},
+            )
+
+        self.assertEqual(config, {"custom_module": {"threshold": -1, "enabled": True}})
+
     def test_processing_rate_is_snapped(self) -> None:
         self.assertEqual(processing_sample_rate(15360000.011967678), 15360000)
         with self.assertRaises(ValueError):
             processing_sample_rate(math.nan)
-
-    def test_assembler_emits_only_complete_frame(self) -> None:
-        assembler = CsiFrameAssembler()
-        for subframe in range(9):
-            result = assembler.process(
-                Message.from_packet(make_subframe(1, subframe, subframe))
-            )
-            self.assertFalse(result.message.has_packet)
-        result = assembler.process(Message.from_packet(make_subframe(1, 9, 9)))
-        self.assertTrue(result.message.has_packet)
-        assert result.message.packet is not None
-        np.testing.assert_array_equal(
-            result.message.packet.data["g1"].reshape(-1),
-            np.repeat(np.arange(10), 2),
-        )
-        self.assertEqual(result.message.packet.meta["end_sequence"], 9)
-        self.assertEqual(result.message.packet.quality["subframe_count"], 10)
-
-    def test_assembler_does_not_bridge_sequence_gap(self) -> None:
-        assembler = CsiFrameAssembler()
-        for subframe in range(4):
-            assembler.process(Message.from_packet(make_subframe(1, subframe, subframe)))
-        result = assembler.process(Message.from_packet(make_subframe(1, 5, 5)))
-        self.assertFalse(result.message.has_packet)
-        self.assertEqual(assembler.buffered_subframes, 0)
-        self.assertEqual(assembler.dropped_partial_frames, 1)
-        for subframe in range(10):
-            result = assembler.process(
-                Message.from_packet(make_subframe(1, 10 + subframe, subframe))
-            )
-        self.assertTrue(result.message.has_packet)
-        assert result.message.packet is not None
-        self.assertEqual(result.message.packet.meta["sequence"], 10)
 
     def test_frame_window_preserves_time_order_and_antennas(self) -> None:
         window = FrameWindow(3, 3)

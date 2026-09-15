@@ -12,8 +12,13 @@ from .cell_search import (
     _sss_sequences,
     _top_peaks,
 )
-from .cell_rs import lte_cell_rs, lte_cell_rs_indices
-from .ofdm_info import LteOfdmInfo, lte_ofdm_info
+from ltesen.ltephy.common import LteOfdmInfo, lte_ofdm_info
+from ltesen.ltephy.ofdm import (
+    OfdmPlan,
+    build_ofdm_plan,
+    lte_ofdm_demodulate,
+)
+from ltesen.ltephy.ch_estimation import lte_cell_rs, lte_cell_rs_indices
 
 
 def lte_dl_frame_offset(
@@ -44,13 +49,24 @@ def lte_dl_frame_offset(
     values = _as_waveform(waveform)
     config = _normalise_correlation_config(correlation_config)
     cellrs_on = config["cellrs"] in {"on", "omitedgerbs"}
+    crs_cache = _build_frame_timing_crs_cache(enb) if cellrs_on else None
+    ofdm_plan = (
+        build_ofdm_plan(
+            info,
+            int(_field(enb, "ndlrb", "NDLRB")),
+            cp_fraction=0.55,
+            sample_count=_subframe_length(info),
+        )
+        if cellrs_on
+        else None
+    )
     if config["pss"] == "off" and config["sss"] == "off" and not cellrs_on:
         zero_offset = 0
         if return_correlation:
-            return zero_offset, np.zeros_like(values, dtype=np.complex128)
+            return zero_offset, np.zeros_like(values, dtype=np.complex64)
         return zero_offset
 
-    correlation = np.zeros_like(values, dtype=np.complex128)
+    correlation = np.zeros_like(values, dtype=np.complex64)
     candidates: list[tuple[float, int, int]] = []
     nid2 = cell_id % 3
     if config["pss"] == "on":
@@ -82,6 +98,9 @@ def lte_dl_frame_offset(
                 offset, cellrs_peak = _refine_with_cellrs(
                     enb, values, offset, config["cellrs"] == "omitedgerbs",
                     config["cellrs_search_radius"],
+                    info=info,
+                    crs_cache=crs_cache,
+                    ofdm_plan=ofdm_plan,
                 )
             else:
                 cellrs_peak = 0.0
@@ -92,7 +111,12 @@ def lte_dl_frame_offset(
 
     if not scored and cellrs_on and config["pss"] == "off" and config["sss"] == "off":
         scored = _cellrs_only_candidates(
-            enb, values, config["cellrs"] == "omitedgerbs"
+            enb,
+            values,
+            config["cellrs"] == "omitedgerbs",
+            info=info,
+            crs_cache=crs_cache,
+            ofdm_plan=ofdm_plan,
         )
 
     if not scored:
@@ -145,16 +169,39 @@ def _mode(value: Any) -> str:
     return str(value).lower().replace("_", "")
 
 
+def _build_frame_timing_crs_cache(
+    enb: Mapping[str, Any] | Any,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build the fixed subframe-0, port-0 CRS data used by timing search."""
+
+    cell_config = {
+        "ndlrb": _field(enb, "ndlrb", "NDLRB"),
+        "ncellid": _field(enb, "ncellid", "NCellID"),
+        "cyclic_prefix": _field(
+            enb, "cyclic_prefix", "CyclicPrefix", default="Normal"
+        ),
+        "duplex_mode": _field(enb, "duplex_mode", "DuplexMode", default="FDD"),
+        "nsubframe": 0,
+    }
+    locations = lte_cell_rs_indices(cell_config, 0, ["sub", "0based"])
+    references = lte_cell_rs(cell_config, 0)
+    return locations, references
+
+
 def _refine_with_cellrs(
     enb: Mapping[str, Any] | Any,
     waveform: np.ndarray,
     offset: int,
     omit_edge_rbs: bool,
     search_radius: int,
+    *,
+    info: LteOfdmInfo | None = None,
+    crs_cache: tuple[np.ndarray, np.ndarray] | None = None,
+    ofdm_plan: OfdmPlan | None = None,
 ) -> tuple[int, float]:
     """Refine a known-cell frame offset using first-subframe CRS."""
 
-    info = lte_ofdm_info(enb)
+    info = lte_ofdm_info(enb) if info is None else info
     if search_radius <= 0:
         default_radius = max(4, info.nfft // 32)
         search_radius = min(default_radius, info.cyclic_prefix_lengths[0])
@@ -169,7 +216,15 @@ def _refine_with_cellrs(
     for center in centers:
         for delta in range(-search_radius, search_radius + 1):
             candidate = center + delta
-            score = _cellrs_frame_score(enb, waveform, candidate, omit_edge_rbs)
+            score = _cellrs_frame_score(
+                enb,
+                waveform,
+                candidate,
+                omit_edge_rbs,
+                info=info,
+                crs_cache=crs_cache,
+                ofdm_plan=ofdm_plan,
+            )
             if score > best_score:
                 best_score = score
                 best_offset = candidate
@@ -181,16 +236,17 @@ def _cellrs_frame_score(
     waveform: np.ndarray,
     frame_offset: int,
     omit_edge_rbs: bool,
+    *,
+    info: LteOfdmInfo | None = None,
+    crs_cache: tuple[np.ndarray, np.ndarray] | None = None,
+    ofdm_plan: OfdmPlan | None = None,
 ) -> float:
     """Return normalized CRS correlation for a candidate frame start."""
 
-    info = lte_ofdm_info(enb)
+    info = lte_ofdm_info(enb) if info is None else info
     subframe_length = _subframe_length(info)
     if frame_offset < 0 or frame_offset + subframe_length > waveform.shape[0]:
         return 0.0
-    # Import locally to keep the ltephy package import order acyclic.
-    from .ofdm_demodulate import lte_ofdm_demodulate
-
     cell_config = {
         "ndlrb": _field(enb, "ndlrb", "NDLRB"),
         "ncellid": _field(enb, "ncellid", "NCellID"),
@@ -199,12 +255,16 @@ def _cellrs_frame_score(
         "nsubframe": 0,
     }
     try:
-        locations = lte_cell_rs_indices(cell_config, 0, ["sub", "0based"])
-        references = lte_cell_rs(cell_config, 0)
+        if crs_cache is None:
+            locations = lte_cell_rs_indices(cell_config, 0, ["sub", "0based"])
+            references = lte_cell_rs(cell_config, 0)
+        else:
+            locations, references = crs_cache
         grid = lte_ofdm_demodulate(
             cell_config,
             waveform[frame_offset : frame_offset + subframe_length, :],
             cp_fraction=0.55,
+            plan=ofdm_plan,
         )
     except (NotImplementedError, ValueError, IndexError):
         return 0.0
@@ -247,10 +307,14 @@ def _cellrs_only_candidates(
     enb: Mapping[str, Any] | Any,
     waveform: np.ndarray,
     omit_edge_rbs: bool,
+    *,
+    info: LteOfdmInfo | None = None,
+    crs_cache: tuple[np.ndarray, np.ndarray] | None = None,
+    ofdm_plan: OfdmPlan | None = None,
 ) -> list[tuple[float, int, int]]:
     """Find frame candidates from CP peaks when PSS/SSS are disabled."""
 
-    info = lte_ofdm_info(enb)
+    info = lte_ofdm_info(enb) if info is None else info
     starts = _cp_peaks(waveform, info)
     symbol_offsets = _symbol_starts(info, 10)
     candidates: list[tuple[float, int, int]] = []
@@ -261,7 +325,15 @@ def _cellrs_only_candidates(
             if frame_start in seen:
                 continue
             seen.add(frame_start)
-            score = _cellrs_frame_score(enb, waveform, frame_start, omit_edge_rbs)
+            score = _cellrs_frame_score(
+                enb,
+                waveform,
+                frame_start,
+                omit_edge_rbs,
+                info=info,
+                crs_cache=crs_cache,
+                ofdm_plan=ofdm_plan,
+            )
             if score > 0:
                 candidates.append((score + cp_score, frame_start, 0))
     candidates.sort(key=lambda item: (-item[0], item[1]))
@@ -281,7 +353,7 @@ def _cp_peaks(waveform: np.ndarray, info: LteOfdmInfo) -> list[tuple[int, float]
         pair = waveform[:-info.nfft, :] * np.conj(waveform[info.nfft :, :])
         cumulative = np.vstack(
             (
-                np.zeros((1, waveform.shape[1]), dtype=np.complex128),
+                np.zeros((1, waveform.shape[1]), dtype=np.complex64),
                 np.cumsum(pair, axis=0),
             )
         )
@@ -402,7 +474,7 @@ def _as_waveform(waveform: np.ndarray) -> np.ndarray:
         raise ValueError("waveform must have shape (samples, antennas)")
     if not np.issubdtype(values.dtype, np.number) or not np.all(np.isfinite(values)):
         raise ValueError("waveform must be finite numeric data")
-    return values.astype(np.complex128, copy=False)
+    return values.astype(np.complex64, copy=False)
 
 
 def _integer_field(value: Mapping[str, Any] | Any, *names: str) -> int:

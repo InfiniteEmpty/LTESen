@@ -38,7 +38,7 @@ class OfdmDemodulateTests(unittest.TestCase):
         )
 
         self.assertEqual(grid.shape, (72, 14, 1))
-        np.testing.assert_allclose(grid[:, :, 0], expected, atol=1e-11, rtol=1e-11)
+        np.testing.assert_allclose(grid[:, :, 0], expected, atol=1e-5, rtol=1e-5)
 
     def test_demodulate_accepts_vector_and_explicit_fft_size(self):
         waveform, expected = make_resource_waveform()
@@ -51,7 +51,7 @@ class OfdmDemodulateTests(unittest.TestCase):
         )
 
         self.assertEqual(grid.shape, (72, 14, 1))
-        np.testing.assert_allclose(grid[:, :, 0], expected, atol=1e-11, rtol=1e-11)
+        np.testing.assert_allclose(grid[:, :, 0], expected, atol=1e-5, rtol=1e-5)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ from typing import Any
 
 import numpy as np
 
-from .fec import (
+from ltesen.ltephy.fec import (
     append_lte_crc16,
     lte_bch_crc_mask,
     lte_convolutional_rate_dematch,

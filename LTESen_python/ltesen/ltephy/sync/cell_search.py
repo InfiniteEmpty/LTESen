@@ -13,7 +13,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from .ofdm_info import LteOfdmInfo, lte_ofdm_info
+from ltesen.ltephy.common import LteOfdmInfo, lte_ofdm_info
 
 
 class CellSearchError(RuntimeError):
@@ -153,7 +153,7 @@ def _as_waveform(waveform: np.ndarray) -> np.ndarray:
         raise ValueError("waveform must have shape (samples, receive_antennas)")
     if not np.issubdtype(values.dtype, np.number) or not np.all(np.isfinite(values)):
         raise ValueError("waveform must be finite numeric data")
-    return values.astype(np.complex128, copy=False)
+    return values.astype(np.complex64, copy=False)
 
 
 def _pss_sequence(nid2: int) -> np.ndarray:
@@ -164,11 +164,13 @@ def _pss_sequence(nid2: int) -> np.ndarray:
     phase = np.empty(62, dtype=float)
     phase[:31] = -np.pi * roots[nid2] * n[:31] * (n[:31] + 1) / 63
     phase[31:] = -np.pi * roots[nid2] * (n[31:] + 2) * (n[31:] + 1) / 63
-    return np.exp(1j * phase)
+    return np.exp(np.asarray(1j * phase, dtype=np.complex64)).astype(
+        np.complex64, copy=False
+    )
 
 
 def _pss_time_template(info: LteOfdmInfo, nid2: int) -> np.ndarray:
-    spectrum = np.zeros(info.nfft, dtype=np.complex128)
+    spectrum = np.zeros(info.nfft, dtype=np.complex64)
     sequence = _pss_sequence(nid2)
     spectrum[-31:] = sequence[:31]
     spectrum[1:32] = sequence[31:]

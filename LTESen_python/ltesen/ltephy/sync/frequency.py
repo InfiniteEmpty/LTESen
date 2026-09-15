@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from .ofdm_info import lte_ofdm_info
+from ltesen.ltephy.common import lte_ofdm_info
 
 
 def lte_frequency_correct(
@@ -26,8 +26,13 @@ def lte_frequency_correct(
     sample_rate = _sample_rate(cfg)
     if not isinstance(offset_hz, Real) or not np.isfinite(offset_hz):
         raise ValueError("offset_hz must be a finite scalar")
-    time = np.arange(values.shape[0], dtype=float) / sample_rate
-    correction = np.exp(-2j * np.pi * float(offset_hz) * time)[:, None]
+    time = np.arange(values.shape[0], dtype=np.float32) / np.float32(sample_rate)
+    correction = np.exp(
+        np.asarray(
+            -2j * np.pi * np.float32(offset_hz) * time,
+            dtype=np.complex64,
+        )
+    )[:, None].astype(np.complex64, copy=False)
     corrected = values * correction
     return corrected[:, 0] if was_vector else corrected
 
@@ -136,7 +141,7 @@ def _as_waveform(waveform: np.ndarray) -> tuple[np.ndarray, bool]:
         raise ValueError("waveform must have shape (samples, antennas)")
     if not np.issubdtype(values.dtype, np.number) or not np.all(np.isfinite(values)):
         raise ValueError("waveform must be finite numeric data")
-    return values.astype(np.complex128, copy=False), was_vector
+    return values.astype(np.complex64, copy=False), was_vector
 
 
 def _sample_index(value: Any, name: str) -> int:

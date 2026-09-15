@@ -6,8 +6,8 @@ close all;
 
 %% Basic config
 
-baseDirectory = 'experiment_data/rx_signal';
-dateCode = '20260803';
+baseDirectory = '../experiment_data/rx_signal';
+dateCode = '20260825';
 recordIndex = 2;
 rootDirectory = fullfile(baseDirectory, ['LTE_' dateCode]);
 recordName = sprintf('LTE_%s_%06d', dateCode, recordIndex);

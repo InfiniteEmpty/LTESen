@@ -15,6 +15,7 @@ dependencies = [
 [project.optional-dependencies]
 plot = [
     "matplotlib>=3.8",
+    "pyqt6>=6.7",
 ]
 
 [tool.setuptools.packages.find]

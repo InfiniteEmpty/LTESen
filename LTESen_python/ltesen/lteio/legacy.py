@@ -93,6 +93,19 @@ class LegacyLTEDataFile(IQDataFile):
             sample_count=self.sample_count or 0,
             num_channels=self.num_channels,
             normalize=normalize,
+            raw_data=self._cached_scalar_range(
+                self.file_path,
+                self.datatype_info,
+                scalar_start=start
+                * self.datatype_info.components_per_sample
+                * self.num_channels,
+                scalar_count=count
+                * self.datatype_info.components_per_sample
+                * self.num_channels,
+                total_scalar_count=(self.sample_count or 0)
+                * self.datatype_info.components_per_sample
+                * self.num_channels,
+            ),
         )
 
     @staticmethod

@@ -2,10 +2,14 @@ import unittest
 
 import numpy as np
 
-from ltesen.ltetracking import OfdmParameters, demodulate_full, estimate_phase_slope_fft
+from ltesen.ltephy import OfdmParameters, demodulate_full
+from ltesen.ltetracking.csi_tracker import _estimate_phase_slope_fft
 
 
-class TrackingHelperTests(unittest.TestCase):
+class PhyAndTrackingHelperTests(unittest.TestCase):
+    def test_ofdm_helpers_live_in_ltephy(self):
+        self.assertEqual(OfdmParameters.__module__, "ltesen.ltephy.ofdm")
+
     def test_full_ofdm_demodulation_retains_all_bins(self):
         params = OfdmParameters(16, 16_000.0, (2, 1))
         symbols = np.array(
@@ -37,7 +41,7 @@ class TrackingHelperTests(unittest.TestCase):
         n = np.arange(n_samples)
         signal = np.exp(2j * np.pi * frequency_bin * n)[:, None, None]
 
-        estimate = estimate_phase_slope_fft(signal)
+        estimate = _estimate_phase_slope_fft(signal)
 
         self.assertEqual(estimate.shape, (1, 1, 1))
         self.assertAlmostEqual(float(estimate[0, 0, 0]), 5.25, places=2)

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import multiprocessing as mp
+import queue
+import time
+import traceback
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -149,6 +153,210 @@ class RangeDopplerViewer(Module):
         return bool(plt.fignum_exists(self.figure.number))
 
 
+class AsyncRangeDopplerViewer(Module):
+    """Send only the newest map to a separate Matplotlib process.
+
+    This test-side viewer keeps the acquisition and DSP pipeline out of the
+    GUI event loop. A one-element queue deliberately drops stale maps when
+    rendering falls behind; the display is a monitor, not a data consumer.
+    """
+
+    def __init__(self, config: Mapping[str, Any] | None = None) -> None:
+        super().__init__("range_doppler_viewer", "range-doppler", "range-doppler")
+        self.config = dict(config or {})
+        self.enabled = bool(self.config.get("enabled", True))
+        self.keep_open_on_end = bool(self.config.get("hold_on_end", False))
+        self.accepted_count = 0
+        self.dropped_count = 0
+        self._context = mp.get_context("spawn")
+        self._queue: Any = None
+        self._process: mp.Process | None = None
+        self._closed_event: Any = None
+        self._ready_event: Any = None
+        self._headless_event: Any = None
+        self._shutdown_complete = False
+
+    def initialize(self, runtime: Any) -> None:
+        super().initialize(runtime)
+        if not self.enabled:
+            return
+        self._queue = self._context.Queue(maxsize=1)
+        self._closed_event = self._context.Event()
+        self._ready_event = self._context.Event()
+        self._headless_event = self._context.Event()
+        self._process = self._context.Process(
+            target=_viewer_process_main,
+            args=(
+                self._queue,
+                self._closed_event,
+                self._ready_event,
+                self._headless_event,
+                self.config,
+            ),
+            name="ltesen-range-doppler-viewer",
+        )
+        self._process.daemon = True
+        self._process.start()
+
+    def process(self, message: Message) -> Result:
+        self.validate_input(message)
+        if not self.enabled:
+            return Result.forward(message)
+        if self._closed_event is not None and self._closed_event.is_set():
+            return Result.stop(message, "user-stopped")
+        if message.has_packet:
+            assert message.packet is not None
+            if self._offer_latest(message.packet):
+                self.accepted_count += 1
+            else:
+                self.dropped_count += 1
+        return Result.forward(message)
+
+    def finalize(self, reason: str) -> Result:
+        if self.enabled and (
+            reason == "failed"
+            or not self.keep_open_on_end
+            or (self._closed_event is not None and self._closed_event.is_set())
+        ):
+            self._shutdown()
+        return Result.forward(Message.none())
+
+    def close(self) -> None:
+        self._shutdown()
+
+    def wait_until_closed(self) -> None:
+        """Keep a visible worker alive until its window is closed."""
+
+        if not self.enabled or self._process is None:
+            return
+        if self._ready_event is not None:
+            self._ready_event.wait(timeout=5.0)
+        if self._headless_event is not None and self._headless_event.is_set():
+            self._shutdown()
+            return
+        while self._process.is_alive():
+            time.sleep(0.05)
+        self._shutdown()
+
+    def get_status(self) -> dict[str, Any]:
+        alive = self._process is not None and self._process.is_alive()
+        if not self.enabled:
+            state = "disabled"
+        elif alive:
+            state = "running"
+        else:
+            state = "stopped"
+        return {
+            "state": state,
+            "ready": self.enabled and self._process is not None,
+            "update_count": self.accepted_count,
+            "rendered": self.accepted_count > 0,
+            "dropped_count": self.dropped_count,
+            "process_alive": alive,
+        }
+
+    def _offer_latest(self, packet: Packet) -> bool:
+        if self._queue is None:
+            return False
+        try:
+            self._queue.put_nowait(packet)
+            return True
+        except queue.Full:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                return False
+            try:
+                self._queue.put_nowait(packet)
+                return True
+            except queue.Full:
+                return False
+
+    def _shutdown(self) -> None:
+        if self._shutdown_complete:
+            return
+        process = self._process
+        if self._queue is not None and process is not None and process.is_alive():
+            try:
+                self._queue.put(None, timeout=0.5)
+            except queue.Full:
+                try:
+                    self._queue.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    self._queue.put(None, timeout=0.5)
+                except queue.Full:
+                    pass
+            process.join(timeout=5.0)
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=2.0)
+        if self._queue is not None:
+            self._queue.close()
+            self._queue.join_thread()
+        self._shutdown_complete = True
+
+
+def _viewer_process_main(
+    packet_queue: Any,
+    closed_event: Any,
+    ready_event: Any,
+    headless_event: Any,
+    config: Mapping[str, Any],
+) -> None:
+    """Process entry point kept at module scope for Windows spawn."""
+
+    try:
+        import matplotlib.pyplot as plt
+
+        worker_config = dict(config)
+        backend = plt.get_backend().lower()
+        headless = _is_headless_backend(backend)
+        if headless:
+            headless_event.set()
+            worker_config["figure_visible"] = False
+        viewer = RangeDopplerViewer(worker_config)
+        ready_event.set()
+
+        while True:
+            try:
+                packet = packet_queue.get(timeout=0.05)
+            except queue.Empty:
+                if viewer.figure is not None:
+                    if not viewer._figure_exists():
+                        break
+                    if not headless:
+                        plt.pause(0.01)
+                continue
+            if packet is None:
+                break
+
+            stop_after_render = False
+            while True:
+                try:
+                    newer = packet_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if newer is None:
+                    stop_after_render = True
+                    break
+                packet = newer
+
+            viewer.process(Message.from_packet(packet))
+            if stop_after_render:
+                break
+            if viewer.figure is not None and not viewer._figure_exists():
+                break
+    except Exception:
+        # The parent still needs a deterministic way to stop its pipeline if
+        # the GUI process fails during startup or rendering.
+        traceback.print_exc()
+    finally:
+        ready_event.set()
+        closed_event.set()
+
+
 def save_range_doppler_plot(
     packet: Packet | Mapping[str, Any],
     path: str | Path,
@@ -173,4 +381,18 @@ def _as_visible(value: Any) -> bool:
     return bool(value)
 
 
-__all__ = ["RangeDopplerViewer", "save_range_doppler_plot"]
+def _is_headless_backend(backend: str) -> bool:
+    """Return whether a Matplotlib backend cannot own a native window.
+
+    Do not test for ``"agg" in backend`` here: GUI backends such as TkAgg and
+    QtAgg deliberately contain the same suffix.
+    """
+
+    normalized = backend.lower().replace("module://", "")
+    name = normalized.rsplit(".", 1)[-1]
+    return name in {"agg", "cairo", "pdf", "pgf", "ps", "svg", "template"} or (
+        "inline" in name
+    )
+
+
+__all__ = ["AsyncRangeDopplerViewer", "RangeDopplerViewer", "save_range_doppler_plot"]

@@ -58,6 +58,73 @@ class DataTypeInfo:
         }
 
 
+class _ScalarReadCache:
+    """Bounded scalar cache for sequential chunked recording reads."""
+
+    def __init__(self, max_bytes: int = 4 * 1024 * 1024) -> None:
+        self.max_bytes = max_bytes
+        self._data: np.ndarray | None = None
+        self._start = 0
+        self._end = 0
+        self._key: tuple[Path, str, int] | None = None
+
+    def read(
+        self,
+        file_path: Path,
+        datatype_info: DataTypeInfo,
+        scalar_start: int,
+        scalar_count: int,
+        total_scalar_count: int,
+    ) -> np.ndarray:
+        if scalar_count == 0:
+            return np.empty(0, dtype=datatype_info.numpy_dtype)
+        scalar_limit = max(1, self.max_bytes // datatype_info.numpy_dtype.itemsize)
+        key = (file_path, datatype_info.name, total_scalar_count)
+        scalar_end = scalar_start + scalar_count
+
+        if (
+            self._data is not None
+            and self._key == key
+            and scalar_start >= self._start
+            and scalar_end <= self._end
+        ):
+            return self._data[scalar_start - self._start : scalar_end - self._start]
+
+        # Large one-off reads bypass the cache instead of evicting it with a
+        # chunk that cannot be reused by the streaming path.
+        if scalar_count >= scalar_limit:
+            return _read_scalar_file(
+                file_path,
+                datatype_info,
+                scalar_start,
+                scalar_count,
+            )
+
+        # Start the cache at the requested range rather than at a fixed file
+        # boundary.  This prevents a sequential request that straddles a
+        # boundary from bypassing the cache and doubling the number of file
+        # reads at every cache boundary.
+        cache_start = scalar_start
+        cache_count = min(scalar_limit, total_scalar_count - cache_start)
+        data = _read_scalar_file(
+            file_path,
+            datatype_info,
+            cache_start,
+            cache_count,
+        )
+        self._data = data
+        self._start = cache_start
+        self._end = cache_start + data.size
+        self._key = key
+        return data[scalar_start - cache_start : scalar_end - cache_start]
+
+    def clear(self) -> None:
+        self._data = None
+        self._start = 0
+        self._end = 0
+        self._key = None
+
+
 class IQDataFile(ABC):
     """Base class for a seekable single-channel IQ recording."""
 
@@ -75,6 +142,7 @@ class IQDataFile(ABC):
         self.sample_count: int | None = None
         self.data_bytes: int | None = None
         self.offset = 0
+        self._read_cache = _ScalarReadCache()
 
     def read(self, length: int | float | None = None, normalize: bool = False) -> np.ndarray:
         """Read from the current offset and advance that offset."""
@@ -82,6 +150,25 @@ class IQDataFile(ABC):
         signal = self.read_at(self.offset, length, normalize)
         self.offset += int(signal.size)
         return signal
+
+    def close(self) -> None:
+        """Release the bounded read cache."""
+
+        self._read_cache.clear()
+
+    def __enter__(self) -> "IQDataFile":
+        return self
+
+    def __exit__(self, _exc_type: Any, _exc_value: Any, _traceback: Any) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            # Destructors must not mask the original exception or interpreter
+            # shutdown errors.
+            pass
 
     def seek(self, position: int | float, origin: str = "bof") -> int:
         """Set the zero-based sample offset."""
@@ -267,6 +354,25 @@ class IQDataFile(ABC):
     ) -> np.ndarray:
         """Read a fixed range without changing the cursor."""
 
+    def _cached_scalar_range(
+        self,
+        file_path: Path,
+        datatype_info: DataTypeInfo,
+        *,
+        scalar_start: int,
+        scalar_count: int,
+        total_scalar_count: int,
+    ) -> np.ndarray:
+        """Return a scalar range from the bounded recording read cache."""
+
+        return self._read_cache.read(
+            file_path,
+            datatype_info,
+            scalar_start,
+            scalar_count,
+            total_scalar_count,
+        )
+
 
 def _validate_index(value: int | float, name: str) -> int:
     number = _validate_integer(value, name)
@@ -293,35 +399,38 @@ def read_interleaved_samples(
     sample_count: int,
     num_channels: int = 1,
     normalize: bool = False,
+    raw_data: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Read interleaved scalar components using a bounded memory map."""
+    """Read interleaved scalar components from cached or direct file data.
+
+    ``raw_data`` is supplied by recording objects after their cache lookup. A
+    direct bounded file read is used when this helper is called independently.
+    """
 
     if length == 0:
-        dtype = np.complex128 if datatype_info.is_complex else np.float64
+        dtype = np.complex64 if datatype_info.is_complex else np.float32
         return np.empty(0, dtype=dtype)
-    byte_offset = from_index * datatype_info.bytes_per_sample * num_channels
     scalar_count = datatype_info.components_per_sample * length * num_channels
     expected_end = from_index + length
     if from_index < 0 or expected_end > sample_count:
         raise ValueError("Requested range is outside the recording")
 
-    raw_map = np.memmap(
-        file_path,
-        dtype=datatype_info.numpy_dtype,
-        mode="r",
-        offset=byte_offset,
-        shape=(scalar_count,),
-    )
-    # Copy the requested chunk so the memory-mapped file is closed before the
-    # result is returned. The caller controls chunk size through read_at().
-    raw = np.array(raw_map, copy=True)
-    del raw_map
-    if datatype_info.is_integer:
-        values = raw.astype(np.float64)
+    if raw_data is None:
+        raw = _read_scalar_file(
+            file_path,
+            datatype_info,
+            from_index * datatype_info.components_per_sample * num_channels,
+            scalar_count,
+        )
     else:
-        values = raw.astype(np.float64, copy=False)
+        raw = np.asarray(raw_data)
+        if raw.size != scalar_count:
+            raise ValueError("Cached scalar range has an unexpected length")
+    # Convert directly from the source scalar type.  This avoids the previous
+    # int16 -> int16 copy followed by a second int16 -> float32 allocation.
+    values = np.array(raw, dtype=np.float32, copy=True)
     if datatype_info.is_complex:
-        signal = values[0::2] + 1j * values[1::2]
+        signal = values[0::2] + np.complex64(1j) * values[1::2]
     else:
         signal = values
 
@@ -332,7 +441,32 @@ def read_interleaved_samples(
         else:
             scale = 2 ** (datatype_info.bits_per_scalar - 1)
             signal = signal / scale
-    return np.asarray(signal).reshape(-1)
+    return np.asarray(
+        signal,
+        dtype=np.complex64 if datatype_info.is_complex else np.float32,
+    ).reshape(-1)
+
+
+def _read_scalar_file(
+    file_path: Path,
+    datatype_info: DataTypeInfo,
+    scalar_start: int,
+    scalar_count: int,
+) -> np.ndarray:
+    """Read and close one bounded scalar range without retaining a handle."""
+
+    values = np.fromfile(
+        file_path,
+        dtype=datatype_info.numpy_dtype,
+        count=scalar_count,
+        offset=scalar_start * datatype_info.numpy_dtype.itemsize,
+    )
+    if values.size != scalar_count:
+        raise OSError(
+            f"Short read from {file_path}: expected {scalar_count} scalars, "
+            f"received {values.size}"
+        )
+    return values
 
 
 __all__ = ["DataTypeInfo", "IQDataFile", "read_interleaved_samples"]

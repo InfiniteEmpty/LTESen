@@ -12,7 +12,7 @@ produced:
 | MATLAB call | Role | Python plan |
 | --- | --- | --- |
 | `lteOFDMInfo` | FFT size, sample rate, CP lengths | Initial implementation: `ltesen.ltephy.lte_ofdm_info`; default table and explicit-NFFT CP validation checked against MATLAB |
-| `lteCellSearch` | PSS/SSS cell identity and timing | Initial implementation: `ltesen.ltephy.cell_search`; PSS/SSS identity and FDD timing are covered by synthetic tests, but numerical parity on recordings is still pending |
+| `lteCellSearch` | PSS/SSS cell identity and timing | Initial implementation: `ltesen.ltephy.sync.cell_search`; PSS/SSS identity and FDD timing are covered by synthetic tests, but numerical parity on recordings is still pending |
 | `lteFrequencyOffset` / `lteFrequencyCorrect` | CFO estimate and correction | Initial NumPy implementation: `ltesen.ltephy.lte_frequency_offset` and `lte_frequency_correct`; synthetic CP/tone tests pass |
 | `lteDLFrameOffset` | Frame timing/correlation | Implemented as `ltesen.ltephy.lte_dl_frame_offset`; known-cell PSS/SSS timing, optional `CellRS`/`OmitEdgeRBs` CRS refinement, CRS-only fallback, FDD synthetic validation, and zero-based offset contract |
 | project `ltesync.Acquirer` | Initial cell lock and MIB acquisition | Implemented as `ltesen.ltesync.Acquirer`; FDD Normal/Extended search, CFO, CRS/PBCH/MIB lock, and post-MIB frame timing are connected and validated on a real SigMF recording |
@@ -34,13 +34,13 @@ These calls are used after acquisition:
 
 | MATLAB call | Role | Python status |
 | --- | --- | --- |
-| project `lteOFDMDemodulateFull` | Full FFT grid, including guard bins | Implemented as `ltesen.ltetracking.demodulate_full` |
-| project `estimatePhaseSlopeFFT` | SFO/phase-slope estimate | Implemented as `estimate_phase_slope_fft` |
+| project `lteOFDMDemodulateFull` | Full FFT grid, including guard bins | Implemented as `ltesen.ltephy.demodulate_full` |
+| project `estimatePhaseSlopeFFT` | SFO/phase-slope estimate | Implemented as the private `_estimate_phase_slope_fft` helper inside `ltesen.ltetracking.csi_tracker`; it is not a standalone pipeline API |
 | project `ltetracking.CfoTracker` | Per-subframe CFO refinement | Implemented as `ltesen.ltetracking.CfoTracker`; coarse-lock correction plus cyclic-prefix residual update |
 | project `ltetracking.CsiTracker` | Phase/SFO correction and static CSI filter | Implemented as `ltesen.ltetracking.CsiTracker`; phase-slope correction, stateful Butterworth-equivalent IIR update, dynamic CSI, timing shift, and warm-up status |
 | project `ltesync.SyncSupervisor` | Synchronization health and reacquisition request | Implemented as `ltesen.ltesync.SyncSupervisor`; repeated low CP-correlation quality produces a receiver reacquisition event |
 | project `ltetracking.fastDLCSIEstimate` | Direct CRS CSI extraction | Implemented as `ltesen.ltephy.lte_crs_csi` for Normal/Extended FDD with one or two transmit ports; `Receiver` precomputes CRS locations and all ten subframe reference-vector variants in `CrsReferenceCache` |
-| project `ltetracking.Receiver` | Streaming raw IQ to CSI subframes | Implemented as `ltesen.ltetracking.Receiver`; emits `csi-subframe` packets, applies CSI tracking, monitors synchronization, and can trigger reacquisition |
+| project `ltetracking.Receiver` | Streaming raw IQ to CSI frames | Implemented as `ltesen.ltetracking.Receiver`; batches one LTE frame for OFDM/CSI tracking, applies CSI tracking, monitors synchronization, and can trigger reacquisition |
 | `lteCellRSIndices` / `lteCellRS` | CRS locations and symbols | Implemented as `ltesen.ltephy.lte_cell_rs_indices` and `lte_cell_rs`; port layouts, MATLAB index options, max-bandwidth sequence extraction, and MATLAB reference vectors are tested |
 | `butter` / `filter` | Static CSI low-pass tracker | Implemented inside `ltesen.ltetracking.CsiTracker` with a dependency-free digital Butterworth design and stateful IIR filtering |
 | MATLAB `resample` | Raw-rate to LTE-rate conversion | `ltesen.lteio.resample_waveform` uses a NumPy windowed-sinc anti-alias FIR for integer downsampling; non-integer ratios retain a deterministic linear fallback, while production polyphase filtering remains pending |

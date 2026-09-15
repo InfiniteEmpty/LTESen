@@ -16,7 +16,7 @@ from typing import Any, Mapping
 import numpy as np
 
 from .cell_rs import lte_cell_rs, lte_cell_rs_indices
-from .resource_grid import lte_resource_grid_size
+from ltesen.ltephy.common import lte_resource_grid_size
 
 
 def lte_dl_channel_estimate(
